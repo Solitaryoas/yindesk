@@ -1,7 +1,7 @@
 export const siteConfig = {
   name: "YinDesk",
   description: "个人博客与知识库：AI 编程、Web 开发与独立开发",
-  url: "https://yudesk-blog.vercel.app",
+  url: "https://yindesk.online",
   author: "Yu",
   email: "hi@example.com",
   links: {
