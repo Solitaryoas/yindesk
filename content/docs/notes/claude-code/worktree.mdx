@@ -1,0 +1,31 @@
+---
+title: Git Worktree 实战
+description: 一个仓库同时开多个分支，互不干扰
+---
+
+`git worktree` 让同一个仓库检出多个工作目录，每个目录一个分支。对"写到一半来了个紧急修复"的场景是完美解法。
+
+## 基本用法
+
+```bash
+# 新建一个 worktree，检出新分支 fix-hotfix
+git worktree add ../project-hotfix -b fix-hotfix
+
+# 查看现有 worktree
+git worktree list
+
+# 用完删除
+git worktree remove ../project-hotfix
+```
+
+## 和 AI 编程结合
+
+<Callout type="info" title="为什么这很重要">
+  AI 写代码时经常会长时间跑任务。把不同的任务放进不同 worktree，主工作区保持干净，两边随时可以切换。
+</Callout>
+
+我的典型工作流：
+
+1. 主 worktree 写新功能
+2. `../project-review` 挂一个 review 分支，让 AI 在那边跑重构实验
+3. 哪边先完成就先合哪边

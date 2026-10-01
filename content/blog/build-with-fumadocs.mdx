@@ -1,0 +1,45 @@
+---
+title: 用 Fumadocs 搭建本站
+description: Next.js 16 + Fumadocs 的博客与知识库搭建记录
+date: 2026-09-20
+tags:
+  - Next.js
+  - Fumadocs
+  - Web开发
+---
+
+本站的技术栈：**Next.js 16（App Router）+ Fumadocs + Tailwind CSS 4**，内容全部是仓库里的 MDX 文件。这篇记录搭建过程和几个关键决定。
+
+## 为什么选 Fumadocs
+
+文档站需要的东西——侧边栏目录树、全文搜索、目录（TOC）、深色模式——Fumadocs 全部内置，而且它只是 Next.js 的一层封装，不是"另一套框架"，想跳出它的约定随时可以手写路由。
+
+## 内容组织
+
+仓库里内容分两个目录：
+
+```bash
+content/
+├── docs/      # 知识库，按主题组织，侧边栏目录树
+└── blog/      # 博客文章，按时间组织
+```
+
+`docs` 里的每个顶层文件夹配一个 `meta.json`，声明标题和图标，`"root": true` 让它变成顶部标签页——这就是导航上"笔记 / 收录 / 独立开发"三个入口的实现方式。
+
+## 博客的 frontmatter
+
+```mdx
+---
+title: 文章标题
+description: 一句话摘要
+date: 2026-09-20
+tags:
+  - Next.js
+---
+```
+
+`date` 和 `tags` 是在 `lib/source.ts` 里扩展 schema 加出来的字段，构建时校验，写错了直接报错而不是静默出问题。
+
+## 部署
+
+推到 GitHub，Vercel 导入，完事。每次 push 自动构建，`.mdx` 文件改动也会触发重建。

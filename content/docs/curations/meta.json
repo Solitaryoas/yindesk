@@ -1,0 +1,7 @@
+{
+  "title": "收录",
+  "description": "收藏的好工具、好文章与好项目",
+  "icon": "Library",
+  "root": true,
+  "pages": ["index"]
+}

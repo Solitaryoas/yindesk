@@ -1,0 +1,30 @@
+---
+title: Claude Code 使用笔记
+description: 架构理解、常用技巧与避坑记录
+---
+
+这一节记录我使用 Claude Code 过程中验证过的理解与技巧。
+
+## 核心概念
+
+<Steps>
+  <Step>
+    **上下文**：模型能看到的一切——系统提示、对话历史、读过的文件。上下文管理是高效使用的关键。
+  </Step>
+  <Step>
+    **工具调用**：读文件、写文件、跑命令都是工具。理解工具循环才能理解它"为什么会那样做事"。
+  </Step>
+  <Step>
+    **子代理**：把大搜索或独立任务委托出去，保护主对话的上下文不被污染。
+  </Step>
+</Steps>
+
+<Callout type="tip" title="建议">
+  与其背诵 prompt 技巧，不如先理解它的工作循环：收到任务 → 规划 → 调工具 → 验证 → 汇报。所有技巧都是围绕这个循环做优化。
+</Callout>
+
+## 本节目录
+
+<Cards>
+  <Card title="Git Worktree 实战" description="多任务并行开发的正确姿势" href="/docs/notes/claude-code/worktree" />
+</Cards>
