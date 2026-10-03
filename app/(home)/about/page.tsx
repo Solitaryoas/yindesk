@@ -35,42 +35,34 @@ export default function AboutPage() {
       </div>
 
       <h2 className="mt-10 text-xl font-semibold">联系方式</h2>
-      <ul className="mt-4 flex flex-col gap-2 text-fd-muted-foreground">
-        <li>
-          GitHub：
+      <div className="mt-4 flex flex-col gap-3 text-fd-muted-foreground">
+        <div className="flex items-center gap-3">
+          <img
+            src={siteConfig.avatarUrl}
+            alt="GitHub Avatar"
+            width={28}
+            height={28}
+            className="size-7 rounded-full"
+          />
           <a
             href={siteConfig.links.github}
             target="_blank"
             rel="noopener noreferrer"
             className="text-fd-primary underline underline-offset-4"
           >
-            {siteConfig.links.github.replace("https://", "")}
+            GitHub：{siteConfig.links.github.replace("https://github.com/", "")}
           </a>
-        </li>
-        <li>
-          X（Twitter）：
+        </div>
+        <p>
+          邮箱：
           <a
-            href={siteConfig.links.x}
-            target="_blank"
-            rel="noopener noreferrer"
+            href={`mailto:${siteConfig.email}`}
             className="text-fd-primary underline underline-offset-4"
           >
-            {siteConfig.links.x.replace("https://", "")}
+            {siteConfig.email}
           </a>
-        </li>
-        <li>
-          知乎：
-          <a
-            href={siteConfig.links.zhihu}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-fd-primary underline underline-offset-4"
-          >
-            {siteConfig.links.zhihu.replace("https://", "")}
-          </a>
-        </li>
-        <li>邮箱：{siteConfig.email}</li>
-      </ul>
+        </p>
+      </div>
 
       <h2 className="mt-10 text-xl font-semibold">技术栈</h2>
       <div className="mt-4 flex flex-col gap-4 text-fd-muted-foreground">

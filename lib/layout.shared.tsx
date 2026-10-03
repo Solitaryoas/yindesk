@@ -4,7 +4,18 @@ import { siteConfig } from "./config";
 export function baseOptions(): BaseLayoutProps {
   return {
     nav: {
-      title: siteConfig.name,
+      title: (
+        <>
+          <img
+            src={siteConfig.avatarUrl}
+            alt="Avatar"
+            width={24}
+            height={24}
+            className="size-6 rounded-full"
+          />
+          {siteConfig.name}
+        </>
+      ),
     },
     links: [
       { text: "笔记", url: "/docs/notes" },
