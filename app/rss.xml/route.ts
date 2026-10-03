@@ -1,6 +1,8 @@
 import { blogSource } from "@/lib/source";
 import { siteConfig } from "@/lib/config";
 
+export const dynamic = "force-static";
+
 function escapeXml(value: string) {
   return value.replace(
     /[<>&'"]/g,

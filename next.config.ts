@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 
 const withMDX = createMDX();
 
-const nextConfig: NextConfig = {};
+const nextConfig: NextConfig = {
+  output: "export",
+  images: { unoptimized: true },
+};
 
 export default withMDX(nextConfig);
