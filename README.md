@@ -44,12 +44,17 @@ MDX 里可直接使用 Fumadocs 提供的组件：`Card`、`CardGroup`、`Callou
 
 ## 搜索
 
-`⌘K` / `Ctrl+K` 全文搜索由 `app/api/search/route.ts` 提供，默认索引 `content/docs` 下的内容。
+`⌘K` / `Ctrl+K` 全文搜索：构建时把索引生成为静态文件（`app/api/search/route.ts`），浏览器端检索，无需任何服务器。
 
-## 部署
+## 部署（GitHub Pages）
 
-1. 推到 GitHub
-2. [Vercel](https://vercel.com) 导入仓库，自动构建
-3. 绑定自己的域名（`.dev` 域名强制 HTTPS，Vercel 自动签发证书）
+站点为纯静态导出（`next.config.ts` 中 `output: "export"`），由 `.github/workflows/deploy.yml` 在每次 push 到 `main` 后自动构建并部署。
 
-部署后把 `lib/config.ts` 里的 `url` 改成实际域名，RSS 和 sitemap 会用到它。
+域名 `yindesk.online` 的 DNS 记录：
+
+- `@` → A 记录 → `185.199.108.153` / `185.199.109.153` / `185.199.110.153` / `185.199.111.153`
+- `www` → CNAME → `Solitaryoas.github.io`
+
+域名在仓库 Settings → Pages → Custom domain 中绑定，HTTPS 证书由 GitHub 自动签发。
+
+`lib/config.ts` 中的 `url` 需与实际域名一致（RSS 和 sitemap 使用它）。
