@@ -20,8 +20,8 @@ description: 我在用的 AI 工作流：四段式主线、自主循环、以及
   <Tab value="Plan 拆解">
     目标：把规格变成**可独立执行、可独立验收**的任务。
 
-    - **to-prd**：把对话上下文合成 PRD（问题/方案/用户故事/实现决策/测试决策），发到 GitHub Issues 并打上 `ready-for-agent` 标签
-    - **to-issues**：把 PRD 切成 **tracer bullet 垂直切片**——每个 issue 贯穿 schema、API、UI、测试全层，完成即可演示；拆完先让我确认粒度再发布
+    - **to-spec**：把对话上下文合成规格（问题/方案/用户故事/实现决策/测试决策），发到 GitHub Issues 并打上 `ready-for-agent` 标签
+    - **to-tickets**：把规格切成 **tracer bullet 垂直切片**——每个 ticket 贯穿 schema、API、UI、测试全层，完成即可演示；拆完先让我确认粒度再发布
     - 关键动作：先找 **seam**（测试接缝），优先复用已有接缝；先 prefactor（"让改动变容易，再做容易的改动"）
   </Tab>
   <Tab value="Implement 实现">
@@ -36,7 +36,7 @@ description: 我在用的 AI 工作流：四段式主线、自主循环、以及
 
     - 重构不属于 red-green 循环，属于这个阶段
     - 检查清单：测试是否真测了行为（反例：tautological 断言）、有无 ponytail 式过度设计残留、ADR 是否需要更新
-    - 这一段我还没有固化成 skill（原套装的 code-review 尚未安装）——目前靠人在 diff 上把关 + 跑全量测试
+    - 这一段由 **code-review** skill 支撑（上次笔记指出它缺位，现已补装），配合人在 diff 上把关 + 跑全量测试
   </Tab>
 </Tabs>
 
