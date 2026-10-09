@@ -15,3 +15,17 @@ html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
 }
+
+/* 文档侧边栏：当前选中项向右偏移 5px，突出当前所在目录 */
+#nd-sidebar a[data-active="true"],
+#nd-sidebar-mobile a[data-active="true"] {
+  translate: 5px 0;
+}
+
+/* 侧边栏项的位移与颜色变化带过渡动画 */
+#nd-sidebar a,
+#nd-sidebar-mobile a {
+  transition-property: translate, color, background-color, border-color, text-decoration-color, fill, stroke;
+  transition-duration: 200ms;
+  transition-timing-function: ease-out;
+}
