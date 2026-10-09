@@ -1,0 +1,85 @@
+---
+title: 主流 AI Agent 对比
+description: 国内外编码 Agent 的模型能力、Agent 架构与生态横向对比，以及选型依据
+---
+
+"AI Agent"这个词被用得太泛。这篇笔记把范围收窄到**能读代码、改代码、跑命令的编码 Agent**，从三个维度横向对比：**模型能力**（底座）、**Agent 架构**（怎么把模型变成会干活的系统）、**生态**（工具链、集成与可用性）。
+
+先说结论：**国外赢在前沿模型与生态先发，国内赢在本地化、合规私有化与成本**。但两者正在互相渗透——开源模型已经能接上类 Claude Code 的脚手架。
+
+## 国外阵营
+
+| 产品 | 底层模型 | 关键特征 | 定价 |
+| --- | --- | --- | --- |
+| **Claude Code** | 自研 Opus 系（1M 上下文） | 动态工作流可编排数十至数百个子 agent；子代理隔离 + 上下文压缩；MCP 原生；OS 级沙箱 + 权限规则 | API 用量 / 订阅 |
+| **OpenAI Codex** | 自研 GPT-5.x | Cloud + 开源 CLI（Rust）；**sandbox + approvals 双层**权限模型 | 订阅 + API |
+| **Google Antigravity** | Gemini 3.x Pro | 2026 年把 Code Assist / Gemini CLI **统一为多智能体平台** | 企业版 |
+| **Cursor** | 自研 Composer + 外部模型 | Cursor 3 支持并行/云端 agent、BugBot 审代码 | 订阅 + 按量 |
+| **Devin** | 自研 SWE 系 + Fusion 架构 | 2025 收购 Windsurf，2026 更名 Devin Desktop | 订阅 / ACU |
+| **GitHub Copilot** | 多模型可选 | Agent 模式 + Coding Agent；转用量计费（AI Credits） | 订阅 |
+| **OpenHands / Aider** | 模型可选 / 任意 LLM | 开源：前者常被用作评测 harness，后者以 repo map + git 纪律著称 | 免费（自付 API） |
+
+## 国内阵营
+
+| 产品 | 底层模型 | 关键特征 | 定价 |
+| --- | --- | --- | --- |
+| **Trae**（字节） | 自研 Seed + GLM/DeepSeek 可选 | SOLO / IDE / Agent 三形态，含 Trae CLI | 国内 ¥ 分档 / 国际 Free–$60 |
+| **Qoder CN**（阿里） | 自研 Qwen-Coder 系 | 原通义灵码；多智能体专家协同 + IDE + 插件 + CLI + 云 Agent | 企业按席位 + credits |
+| **文心快码 Comate**（百度） | 文心大模型 | AI 原生 IDE + 智能体 Zulu，支持 MCP | 免费档 / 企业版 |
+| **CodeBuddy**（腾讯） | 混元 + DeepSeek | 插件 / IDE / CLI 三端，含 Sub-agents、运行时安全检测 | 企业按席位 + credits |
+| **CodeGeeX**（智谱） | GLM 系列 | 老牌插件，重心转向 ZCode + GLM Coding Plan（适配国产芯片） | 订阅 |
+| **Kimi**（月之暗面） | 自研 K 系列（含开源） | OK Computer、**Agent Swarm**（Agent 集群） | 订阅 / API |
+| **DeepSeek** | 自研 V 系（1M 上下文） | API 低价；自研 Harness 框架提供**类 Claude Code 兼容层** | API |
+| **Coze 扣子**（字节） | 多模型（含自定义） | Agent 平台，已升级为多人 + 多 Agent 协作 | 订阅 |
+| **Dify** | 模型无关（开源） | Apache 2.0 + 条件的开源 License，**私有化部署强** | 开源免费 / SaaS |
+
+## 维度一：模型能力
+
+<Callout type="warn" title="基准数字务必看口径">
+  第三方聚合榜之间**互相打架**：同一模型在不同榜单能差出十几个百分点（scaffold 脚手架、prompt、评测规模都不同）。**只引用厂商官方 system card 里的数字**，聚合榜仅作趋势参考。
+</Callout>
+
+- **SWE-bench Verified**（修真实 issue）：前沿闭源模型已进入 90%+ 区间；但第三方榜对同一模型的报数从 79% 到 96% 不等，口径混乱。
+- **Terminal-Bench 2.0**（终端自主操作）：国外头部约 82%，国产开源模型在 50% 出头——**差距主要体现在长链路自主性与工具使用稳定性**上。
+- **长上下文**：国外 Claude 系与国产 DeepSeek-V 系都主打 **1M token**，这是国产缓解"上下文管理弱"的主要手段。
+
+一句话：**榜单领先看国外，但真实差距高度依赖你的任务形态**——修单文件 bug 与跨仓库重构，考验的能力完全不同。
+
+## 维度二：Agent 架构
+
+这是最能体现"工程功力"的维度，四个子问题：
+
+1. **编排（单 Agent vs 多 Agent）**
+   主流正从"单 agent 循环"走向"多 agent 编排"：Claude Code 的动态工作流、Kimi 的 Agent Swarm、Coze 3.0 的多人多 Agent、Devin 的 Fusion 架构、Qoder 的多智能体协同。**多 Agent 的代价是调试与成本**，不是越多越好。
+2. **上下文管理**（决定能跑多久）
+   Claude Code 的做法有代表性：`/compact` 自动压缩 + `.claude/agents/*.md` 子代理隔离 + 项目记忆文件落盘；子代理还能再生成子代理，但受**深度/并发/花费上限**约束。国产普遍用"堆长上下文"（1M）替代精细压缩——简单，但长任务里更容易衰减。
+3. **工具系统 / MCP**
+   **MCP 已是事实标准**：2026 年主流厂商（Anthropic、OpenAI、Google、Microsoft、AWS、Cursor、JetBrains、LangChain 等）原生支持，规范也在持续大版本迭代。配套的 **A2A**（Agent 间通信）在并行推进。对团队的含义：**把内部工具做成 MCP Server，一次投入、所有 Agent 复用**。
+4. **沙箱与权限**（企业落地的门槛）
+   Claude Code：OS 级文件/网络隔离 + 权限规则 + hooks（可强制网络白名单）；Codex：sandbox + approvals 双层；国产企业版（CodeBuddy 等）加入运行时安全检测。**没有沙箱的 Agent 不要接入生产仓库**。
+
+## 维度三：生态与可用性
+
+- **形态**：国外以 **CLI / Cloud / SDK** 为主（SDK、CLI 开源），偏"可编程、可组合"；国内普遍是 **IDE 插件 + 独立 IDE + CLI 三端齐上**，偏"开箱即用"。
+- **私有化与合规**：**国内显著强于国外**——Dify 支持 on-prem、Qoder 企业专属版走专属 VPC、CodeBuddy 有专有云企业版、智谱 GLM 适配国产芯片。数据不出内网这一条，在国外产品上很难满足。
+- **可用性**：国外头部（Claude Code、Codex、Antigravity、Devin）对国内用户**直连受限**；国产企业版价格据评测约为海外同级的一半左右（二手数据，需自行核实）。
+- **开放性**：开源组合正在打通——**开源模型（DeepSeek / Kimi / GLM）+ 类 Claude Code 脚手架**（含各种兼容层）已经可用，选型不再等于"选厂商"。
+
+## 选型依据
+
+| 你的约束 | 倾向 |
+| --- | --- |
+| 要最前沿的自主能力、可编程工作流 | 国外头部（Claude Code / Codex / Antigravity） |
+| 强合规、数据不出内网、中文场景 | 国内（Qoder CN / CodeBuddy / Dify 私有化） |
+| 成本敏感、想自建 | 开源模型 + 开源脚手架（Aider / Cline / OpenHands） |
+| 只要 PR 审查 / 单测生成 | CodeRabbit / Greptile / Diffblue 这类单点工具 |
+
+## 三点判断
+
+1. **模型差距在缩小，架构差距在放大**。同样的模型，好的上下文管理与子代理隔离能让完成率差出数倍——**架构是可积累的工程资产，模型不是**。
+2. **MCP 是当下最值得投入的接口层**。它把"给 Agent 提供上下文/工具"从每家一套变成一次接入、到处复用。
+3. **合规不是减分项**。数据不出内网、沙箱与权限模型，正在从"国内特色"变成**全球企业采购的硬门槛**。
+
+<Callout type="warn" title="时效与口径">
+  数据截至 **2026-10**，模型版本、价格与榜单每月在变。基准分数请回溯厂商官方 system card；本文中标注为二手的价格/评测结论仅供参考。
+</Callout>

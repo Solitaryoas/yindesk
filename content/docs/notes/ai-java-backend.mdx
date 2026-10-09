@@ -1,0 +1,115 @@
+---
+title: AI 辅助 Java 后端开发
+description: IDE 助手、CLI Agent、服务端 LLM 集成——Java 后端的三条 AI 路线与选型
+---
+
+Java 后端"用上 AI"其实有**三条互不相同的路线**，混在一起谈就会失焦：一条是**帮你写代码**的助手，一条是**替你跑任务**的 Agent，还有一条是**把大模型做进服务里**的框架。三者的目标、形态和选型标准完全不同。
+
+<Tabs items={["① 写代码的助手", "② 跑任务的 Agent", "③ 服务里的 LLM"]}>
+  <Tab value="① 写代码的助手">
+    形态是 IDE 插件或独立编辑器，主打**补全、改写、问答、生成单测**。人在环中，逐段确认。
+
+    - 典型：GitHub Copilot、JetBrains AI + Junie、通义灵码（Qoder CN）、文心快码 Comate、腾讯 CodeBuddy
+    - 衡量标准：补全准确率、对 Spring/框架语义的理解、上下文窗口、是否支持 Agent 模式
+    - 心智模型：**增强的自动补全 + 结对伙伴**
+  </Tab>
+  <Tab value="② 跑任务的 Agent">
+    形态是终端 CLI 或 IDE 内的自主模式，能**读代码库、改多文件、跑 Maven/Gradle、看测试结果再迭代**。
+
+    - 典型：Claude Code、OpenAI Codex CLI、Gemini CLI、Aider、Cline、OpenHands，以及 Trae / Qoder / Junie 的 CLI
+    - 衡量标准：单次任务能走多远、上下文管理、沙箱与权限、能否自我验证
+    - 心智模型：**给一个 issue，让它自己跑到测试变绿**
+  </Tab>
+  <Tab value="③ 服务里的 LLM">
+    形态是**后端框架**，用来把大模型能力（对话、RAG、工具调用）嵌进你自己的 Java 服务里，交付给终端用户。
+
+    - 典型：Spring AI、LangChain4j、Quarkus LangChain4j、MCP Java SDK
+    - 衡量标准：与 Spring Boot 的集成度、工具调用/RAG 的抽象、多模型支持、可观测性
+    - 心智模型：**LLM 就是你服务里的一个普通依赖**
+  </Tab>
+</Tabs>
+
+<Callout type="info" title="一句话区分">
+  路线 ①②是"造软件的 AI"，路线 ③是"软件里的 AI"。前者提升开发效率，后者是你的产品功能。
+</Callout>
+
+## 路线①：IDE / 编辑器内的 AI 助手
+
+Java 场景下，工具的差异主要落在**框架语义理解**（Spring 的 Bean、依赖注入、AOP）和**是否进入 Agent 模式**上。主流工具对比（价格与版本截至 2026-10，变动频繁，以官网为准）：
+
+| 工具 | 厂商 | 形态 | Agent | 亮点 / 局限 |
+| --- | --- | --- | --- | --- |
+| GitHub Copilot | GitHub | 插件 + 逐步原生集成 | ✅ | 生态最广、多模型可选；Java 无框架专精，已转用量计费 |
+| Cursor | Anysphere | 独立 IDE | ✅ Composer | 编辑器体验强、可并行/云端 agent；Spring 语义不如 JetBrains |
+| JetBrains AI + Junie | JetBrains | IDE 原生 + CLI | ✅ Junie | **Java/Kotlin 最深**：IDEA 支持 Spring Bean 运行时洞察；免费档额度有限 |
+| Amazon Q Developer | AWS | 插件 + CLI | ✅ | 强项是 **legacy Java 版本升级/迁移** |
+| Continue.dev | Continue | 开源插件 | ✅ | 开源、BYOK，适合接自建/私有模型 |
+| 通义灵码 → Qoder CN | 阿里 | 插件 + CLI + Cloud | ✅ | 中文 Java 优化；2026-05 更名 Qoder CN 套件 |
+| 文心快码 Comate | 百度 | AI 原生 IDE + 插件 | ✅ | 设计稿转代码、MCP；有免费档 |
+| CodeGeeX | 智谱 | 插件 | 有限 | 免费为主；重心转向 ZCode + GLM Coding Plan |
+| Trae | 字节 | 独立 IDE + CLI | ✅ | SOLO/Agent 模式；国内按档订阅 |
+| CodeBuddy | 腾讯 | 插件 + IDE + CLI | ✅ | 混元 + DeepSeek 双模型，三端覆盖 |
+| 码道 CodeArts 代码智能体 | 华为 | AI IDE + 客户端 | ✅ | 原 CodeArts Snap，主打代码检查/构建 |
+| iFlyCode | 讯飞 | JetBrains 插件 | 有限 | 星火底座，**单元测试生成**强化 |
+
+选型经验：**大型成熟 Spring 项目优先 JetBrains 系**（框架语义最深）；**预算敏感或需私有化优先国产**（个人档普遍免费、企业按席位/积分计费）。
+
+## 路线②：终端 CLI / 自主 Agent
+
+CLI Agent 是 2025–2026 年 Java 侧变化最大的一环。它们在 Java 项目里的**共性用法**很朴素却有效：
+
+```bash
+# Agent 的迭代闭环本质上就是这四步
+# 1. 读需求 / 定位代码
+# 2. 改代码（跨多文件）
+mvn -q -DskipTests compile
+# 3. 用构建/测试输出当反馈
+mvn -q test -Dtest=OrderServiceTest
+# 4. 看失败信息继续改，直到变绿
+```
+
+愿意执行 shell、能把测试输出当反馈，是这类 Agent 能"自己跑起来"的关键。适合：**跨模块重构、依赖/框架升级、批量改 POJO 与接口**。
+
+代表工具：**Claude Code**（MCP 原生、子代理隔离，深度自主任务的标杆）、**OpenAI Codex CLI**（Rust 重写、自带沙箱 + 审批双层模型）、**Gemini CLI**、**Aider**（开源、自动 git commit）、**Cline**、**OpenHands**，以及国产的 **Trae CLI / Qoder CLI / CodeBuddy Code / Junie CLI**。
+
+<Callout type="warn" title="前置条件">
+  CLI Agent 的收益与你项目的**可验证性**成正比。测试全绿是一个可执行的验收信号，没有测试的 Java 老项目让 Agent 自由发挥，风险很高。
+</Callout>
+
+## 路线③：Java 生态的 AI 框架
+
+把 LLM 做进 Spring Boot 服务，目前收敛到两条主线，外加几个补充选项：
+
+| 框架 | 定位 | 关键能力 | 现状（2026-10） |
+| --- | --- | --- | --- |
+| **Spring AI** | Spring 官方 | `ChatClient` + advisor 链、`ToolCallingAdvisor`、`QuestionAnswerAdvisor`（RAG）、结构化输出自校验 | 2.0 GA（2026-06），基线 Spring Boot 4；2.1 预告 Agentic 特性 |
+| **LangChain4j** | 社区主流 | AI Services、`@Tool`、RAG、向量库、**MCP 客户端**、Agent 状态持久化恢复 | 1.13（2026-04）；有 Spring Boot starter |
+| Quarkus LangChain4j | Quarkus 扩展 | 与 LangChain4j 同源，支持 **Native 编译** | 随 Quarkus LTS 发布 |
+| Semantic Kernel for Java | 微软 | `com.microsoft.semantic-kernel` | 仍是 rc，活跃度低于前两者 |
+| MCP Java SDK | **Spring 团队维护** | 实现 Model Context Protocol 的 Java 侧 | 随 Spring AI 版本迭代 |
+
+**怎么选**：新项目、且已是 Spring Boot → **Spring AI**（官方原生、Boot 打通）；需要多模型切换、复杂 Agent 状态恢复、或非 Spring 栈 → **LangChain4j**；要 Native 镜像 → **Quarkus 扩展**。
+
+## 工程化落地
+
+- **MCP 已是事实标准**：IntelliJ IDEA 自 2025.2 起内置 MCP server，可把 IDE 能力暴露给 Claude Desktop / Cursor / Codex 等；反向地，用 `@McpTool` 把公司内部服务暴露给 Agent，是最省事的上下文接入方式。
+- **CI 里接 AI**：**CodeRabbit**、**Greptile** 做 PR 审查；**Diffblue Cover** 用强化学习自动生成 Java 单测（Maven/Gradle 插件，不产生幻觉式 mock）。
+- **安全必须兜底**：多方研究指出 AI 生成代码的漏洞比例不低（有研究测得约 **20% 的代码引用不存在的依赖包**，即 slopsquatting 攻击面；超过半数样本含漏洞，且加安全提示的改善有限）。因此在 Java 项目里：**SAST 兜底 + 依赖来源校验 + 关键路径人工复核**三件套不能省。
+
+## 主流组合
+
+| 场景 | 常见组合 |
+| --- | --- |
+| 大型成熟 Spring 微服务 | IntelliJ + Junie/Copilot 内联补全 + CLI Agent 做跨模块重构/升级 |
+| 国内团队、预算敏感或需私有化 | Qoder CN / Comate / CodeBuddy 补全 + 国产 CLI 跑 Agent 任务 |
+| 后端服务内嵌 LLM 能力 | Spring Boot + **Spring AI 2.0**（首选）或 **LangChain4j** |
+| 上下文 / 工具接入 | MCP Server 统一暴露内部服务给 IDE 与 Agent |
+| PR 质量与安全 | CodeRabbit/Greptile 审 PR + Diffblue/CI 生成单测 + SAST 兜底 |
+
+## 趋势判断
+
+Java 侧在 2025–2026 年已经**从"补全"进入"Agent + MCP + 框架化"阶段**：写代码这件事由 IDE 助手和 CLI Agent 分担，而把模型能力变成产品功能这件事，由 Spring AI / LangChain4j 这类框架承接。国产工具普遍"个人免费、企业按积分/席位计费"，并在 2026 年集中完成了改名与 Agent 化改版（灵码 → Qoder CN、CodeArts Snap → 码道）。
+
+<Callout type="warn" title="时效与口径">
+  本文价格、版本号与基准数据截至 **2026-10**，AI 工具迭代极快，请以各厂商官网为准。涉及第三方评测的结论（尤其代码安全比例）口径不一，引用时建议回溯原始来源。
+</Callout>
