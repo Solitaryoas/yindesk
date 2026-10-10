@@ -3,5 +3,5 @@
   "description": "学习笔记与知识沉淀",
   "icon": "BookOpen",
   "root": true,
-  "pages": ["index", "claude-code", "ai-workflow", "engineering", "ai-java-backend", "ai-agents"]
+  "pages": ["index", "ai-workflow", "engineering", "ai-java-backend", "ai-agents"]
 }
