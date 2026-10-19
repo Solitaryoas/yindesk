@@ -3,5 +3,5 @@
   "description": "TDD、代码生成与开发环境",
   "icon": "Wrench",
   "root": true,
-  "pages": ["index"]
+  "pages": ["index", "tdd", "codegen"]
 }
