@@ -20,7 +20,7 @@ export function baseOptions(): BaseLayoutProps {
     links: [
       { text: "笔记", url: "/docs/notes" },
       { text: "收录", url: "/docs/curations" },
-      { text: "独立开发", url: "/docs/indie-dev" },
+      { text: "工程实践", url: "/docs/engineering" },
       { text: "博客", url: "/blog" },
       { text: "关于", url: "/about" },
     ],

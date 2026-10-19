@@ -34,7 +34,7 @@ export default function HomePage() {
         </h1>
         <p className="max-w-xl text-lg text-fd-muted-foreground">
           这是我的个人知识库与博客：沉淀 AI 编程、Web
-          开发与独立开发的实践笔记，也收录路上遇到的好东西。
+          开发与工程实践的笔记，也收录路上遇到的好东西。
         </p>
         <div className="flex flex-col gap-3 sm:flex-row">
           <Link
