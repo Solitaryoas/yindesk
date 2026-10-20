@@ -11,6 +11,14 @@ html {
   scrollbar-gutter: stable;
 }
 
+/* 右侧目录点击锚点跳转时平滑滚动，而不是瞬间跳到目标章节。
+   跟随系统的"减少动态效果"偏好，开启时保持瞬时跳转。 */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
 html > body[data-scroll-locked] {
   margin-right: 0px !important;
   --removed-body-scroll-bar-size: 0px !important;
