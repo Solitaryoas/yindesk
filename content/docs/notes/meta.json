@@ -9,6 +9,7 @@
     "ai-java-backend",
     "ai-agents",
     "trae-review",
-    "jeepay-guide"
+    "jeepay-guide",
+    "workbuddy-proxy"
   ]
 }

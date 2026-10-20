@@ -1,0 +1,263 @@
+---
+title: WorkBuddy 反代接入 DeepSeek Harness
+description: 把 WorkBuddy 免积分模型转录成本地 OpenAI 兼容网关，并接进 dsh
+---
+
+> **记录环境**：Windows 11 / workbuddy2api-hub v1.7.12 / DeepSeek Harness 桌面版
+>
+> **参照原文**：[ftlian.top 上的原帖](https://ftlian.top/2026/10/18/workbuddy-proxy/)
+
+## 这套方案在做什么
+
+WorkBuddy 国内站（`www.codebuddy.cn`）和国际站（`www.workbuddy.ai`）对 `DeepSeek-V4.1-Flash` 目前不计积分消耗。`workbuddy2api-hub` 做的事情是：
+
+```text
+dsh / 任意 OpenAI 客户端
+        │  OpenAI 兼容协议 (http://127.0.0.1:8788/v1)
+        ▼
+   wb-proxy 本地网关
+        │  复用 WorkBuddy 账号的 OAuth token 直连上游
+        ▼
+   WorkBuddy 上游 API（扣除积分，DeepSeek-V4.1-Flash 记 0）
+```
+
+关键点：**代理持有 refreshToken 并能自动续期**，所以配置完成后不需要 WorkBuddy 桌面客户端保持运行。
+
+有效性有时限——上游随时可能取消免费策略或改协议，本文以 v1.7.12（2026-10-17 发布）为准。
+
+## 前置条件
+
+| 项 | 要求 |
+| --- | --- |
+| 系统 | Windows（本文）；macOS / Linux 用同名 `.sh` / `.command` 脚本 |
+| 运行时 | 绿色包自带 `python/`，无需另装 Python |
+| 账号 | 国内站需微信；国际站需 Google / GitHub / X |
+| 端口 | 默认 8788，需未被占用 |
+
+## 第一步：下载并校验
+
+从 Releases 页面下载 Windows 包：
+
+```powershell
+$zip = "$env:TEMP\workbuddy2api-hub-v1.7.12.zip"
+curl.exe -L --fail -o $zip `
+  "https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases/download/v1.7.12/workbuddy2api-hub-v1.7.12.zip"
+```
+
+校验哈希（务必做，这是第三方工具，且要保存你的登录凭据）：
+
+```powershell
+(Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+curl.exe -sL "https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases/download/v1.7.12/SHA256SUMS"
+```
+
+两个值一致再解压：
+
+```powershell
+Expand-Archive -Path $zip -DestinationPath "C:\tools\workbuddy" -Force
+```
+
+解压后核心目录是 `wb-proxy\`，`accounts\` 会在首次运行时生成（存放账号 token、API Key、面板密码摘要）。
+
+## 第二步：启动网关
+
+**正常用法**：双击 `wb-proxy\start-wb-proxy.bat`。
+
+它会优先用自带的 `python\pythonw.exe` 无窗口启动服务，再另开一个控制台窗口做实时日志查看器——关掉日志窗口不会停服务。
+
+**后台静默启动**（适合放进脚本或远程执行）：
+
+```powershell
+Start-Process -FilePath "C:\tools\workbuddy\wb-proxy\python\python.exe" `
+  -ArgumentList "wb_proxy.py","--port","8788" `
+  -WorkingDirectory "C:\tools\workbuddy\wb-proxy" `
+  -WindowStyle Hidden -PassThru `
+  -RedirectStandardOutput "C:\tools\workbuddy\proxy.out.log" `
+  -RedirectStandardError  "C:\tools\workbuddy\proxy.err.log"
+```
+
+确认监听：
+
+```powershell
+Get-NetTCPConnection -LocalPort 8788 -State Listen
+curl.exe -s -o NUL -w "%{http_code}`n" http://127.0.0.1:8788/
+```
+
+启动成功时日志里应看到：
+
+```text
+[wb-proxy] listening  : http://127.0.0.1:8788/v1  (api key: off)
+[wb-proxy] dashboard  : http://127.0.0.1:8788/
+```
+
+两个地址分别是**给客户端用的 API 端点**和**人看的配置看板**，别混淆。
+
+## 第三步：接入账号
+
+浏览器打开 `http://127.0.0.1:8788/`，默认面板密码 `admin`（本机自用可带 `?pwd=admin` 免输）。
+
+1. 展开「账号」区域，点「+ 添加账号 (OAuth)」
+2. 选择站点：国内站走微信扫码；国际站走 Google / GitHub / X
+3. 授权完成后回调被自动捕获，账号直接入库，无需手工复制凭证
+
+入库后 `accounts\` 下会出现一个 `<uid>.json`，字段包含 `domain`（如 `www.codebuddy.cn`）、`realm`（`cn` / `intl`）、`refreshToken`、`expiresAt`、`credits`。
+
+<Callout type="info" title="备选路径">
+  Windows 上还能从「运行中的 WorkBuddy 桌面客户端」导入账号（就地解密本地加密 token）。只有走这条路才需要客户端处于运行状态。
+</Callout>
+
+## 第四步：领取积分
+
+看板左上方「任务与福利」，依次点三个按钮完成打卡 / 每日活跃。积分不是即时到账，稍等后在账号卡片「一键刷新积分」即可看到余额变化。
+
+实测：打卡后余额由 1600 变为 3100。
+
+## 第五步：生成 API Key
+
+看板 →「设置」→「API Key」→ 新建，备注随便填，Key 自动生成，**当场复制保存**（面板之后只显示掩码）。
+
+建议为 dsh 单独建一把 Key，并绑定 `realm=cn`。这样即使以后接了国际站账号，走这把 Key 的请求也只会落到国内站账号上——这就是原文说的「默认出口设为国内站」在 1.7.12 里的等价实现（该版本没有独立的出口开关，改为 Key 级 realm 绑定）。
+
+### 用脚本建 Key（可选）
+
+面板鉴权是 `X-Panel-Token` 请求头，不是 Cookie：
+
+```powershell
+$base = 'http://127.0.0.1:8788'
+$login = Invoke-RestMethod -Uri "$base/panel/login" -Method Post `
+  -ContentType 'application/json' -Body '{"password":"admin"}'
+$h = @{ 'X-Panel-Token' = $login.token }
+
+$key  = 'sk-wb-' + [guid]::NewGuid().ToString('N')
+$body = @{
+  api_keys = @(@{ id=''; name='dsh'; key=$key; realm='cn'; models=@(); enabled=$true })
+  deleted_api_key_ids = @()
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod -Uri "$base/settings/save" -Method Post -Headers $h `
+  -ContentType 'application/json' -Body $body
+```
+
+<Callout type="warn" title="两个坑">
+  1. 写设置的路径是 `/settings/save`，不是 `/settings`（后者 POST 返回 404），`/settings` 只用于 GET 读取。
+  2. `deleted_api_key_ids` 必须一起传（哪怕是空数组）。带上它才是「增量 upsert」语义；不传时服务端按「替换式」处理，会把你没列出的 Key 全删掉。
+</Callout>
+
+创建完成后 `auth_required` 变为 `true`，验证：
+
+```powershell
+curl.exe -s -o NUL -w "with_key=%{http_code}`n" -H "Authorization: Bearer $key" http://127.0.0.1:8788/v1/models
+curl.exe -s -o NUL -w "no_key=%{http_code}`n" http://127.0.0.1:8788/v1/models
+# 期望 200 / 401
+```
+
+## 第六步：接入 DeepSeek Harness
+
+### 方式一：官方配置器 CLI（推荐）
+
+看板「智能体配置」页的按钮只在「网关本机 + 用 127.0.0.1 打开」时可用；用 CLI 更可控，且支持 `--dry-run`。
+
+```powershell
+$py = "C:\tools\workbuddy\wb-proxy\python\python.exe"
+
+# 1. 先看本机检测到哪些客户端
+& $py "C:\tools\workbuddy\wb-proxy\wb_agents.py" list
+
+# 2. 预演，只看不写
+& $py "C:\tools\workbuddy\wb-proxy\wb_agents.py" apply --client dsh `
+  --base-url http://127.0.0.1:8788/v1 --key $key --dry-run
+
+# 3. 正式写入
+& $py "C:\tools\workbuddy\wb-proxy\wb_agents.py" apply --client dsh `
+  --base-url http://127.0.0.1:8788/v1 --key $key
+```
+
+成功输出形如：
+
+```text
+configured DeepSeek Harness (dsh) -> http://127.0.0.1:8788/v1
+  created  C:\Users\<你的用户名>\.dsh\settings.yaml
+  updated  C:\Users\<你的用户名>\.dsh\.credentials.yaml
+models:  18 fetched from the gateway (key accepted)
+state:   C:\Users\<你的用户名>\.wb-agent-config
+```
+
+它做了三件事：
+
+1. 写 `~/.dsh/settings.yaml` 的 `llm-pi-ai.providers.wb-proxy`，声明 `api: openai-completions` + `baseURL` + 18 个模型的 `contextWindow` / `maxTokens` / `reasoningEfforts`；
+2. 把 API Key 写进 `~/.dsh/.credentials.yaml` 的 `refs.WB_PROXY_API_KEY`（配置里用 `apiKeyEnv` 引用，不落明文到 settings.yaml）；
+3. 备份原文件到 `accounts/agent-backups/dsh/`，并把还原状态写入 `~/.wb-agent-config`。
+
+### 方式二：看板一键配置
+
+看板 →「智能体配置」→ 选 Key 与默认模型 → 在检测到的 DSH 卡片上点「一键配置」。同样自动备份、可一键还原。
+
+### 生效步骤（客户端侧）
+
+1. 退出并重启 DeepSeek Harness
+2. 新建对话 → 点输入框右下角模型名称 → 选 `WB Proxy → Deepseek-V4.1-Flash`
+3. 旁边的「推理等级」可选 `low` / `high` / `max`（选项来自配置里的 `reasoningEfforts`，不是 DSH 设置页）
+
+## 第七步：端到端验证
+
+绕开 dsh，直接用 curl 打网关，确认整条链路通：
+
+```powershell
+'{ "model":"deepseek-v4.1-flash",
+   "messages":[{"role":"user","content":"Reply with exactly: proxy-ok"}],
+   "max_tokens":32, "stream":false }' | Out-File -Encoding ascii "$env:TEMP\t.json"
+
+curl.exe -s -H "Authorization: Bearer $key" -H "Content-Type: application/json" `
+  -d "@$env:TEMP\t.json" http://127.0.0.1:8788/v1/chat/completions
+```
+
+预期返回：
+
+```json
+{
+  "model": "deepseek-v4.1-flash",
+  "choices": [{"message": {"role": "assistant", "content": "proxy-ok"}}],
+  "usage": {"prompt_tokens": 43, "completion_tokens": 15, "total_tokens": 58},
+  "credit": 0
+}
+```
+
+`credit: 0` 是关键——说明这次调用没有扣积分。
+
+## 踩过的坑汇总
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `POST /settings` 返回 404 | 写入接口是 `/settings/save` | 改用 `/settings/save` |
+| `/accounts` 一直 401 | 面板接口要 `X-Panel-Token` 头，不是 Cookie，也不认 API Key | 先 `POST /panel/login` 换 token |
+| 保存 Key 后其他 Key 消失 | 未传 `deleted_api_key_ids`，走的是替换语义 | 每次保存都带上该字段 |
+| dsh 里看不到自建 provider | `profiles/<profile>/cordis.patch.yml` 里有 `- id: llm-pi-ai` 条目会**整体覆盖**插件配置 | 检查该文件；有则删掉该条目或改 patch 里的那份 |
+| 重启电脑后 dsh 全部报连接失败 | 网关进程随关机消失 | 见「日常维护」的常驻运行 |
+| 账号卡片报授权失效 | refreshToken 过期或上游风控 | 看板重新扫码授权一次 |
+
+## 日常维护
+
+**常驻运行**：当前后台进程关机会消失。要开机自启，把 `start-wb-proxy.bat` 注册成计划任务（触发器选「登录时」，操作用该 bat 的绝对路径，起始位置填 `wb-proxy` 目录）。
+
+**看用量**：看板「数据看板」能看积分扣减、剩余用量估算、积分获取历史、按 OpenRouter 价的等价花费。
+
+**升级**：下载新版本 zip 覆盖 `wb-proxy\` 前先备份 `accounts\` 目录——账号 token、API Key、面板密码都在里面。
+
+**回滚 dsh 配置**：
+
+```powershell
+& $py "C:\tools\workbuddy\wb-proxy\wb_agents.py" restore --client dsh
+```
+
+字节级还原到首次接入前，网关新建的文件会被清理。
+
+## 风险提示
+
+<Callout type="warn" title="别把端口暴露到公网">
+  `workbuddy2api-hub` 是第三方工具，会在本地保存你的 WorkBuddy 登录凭据（含 refreshToken），并代替你调用上游。只用自己信任的构建，务必核对 SHA256。
+</Callout>
+
+- **不要**把 8788 端口暴露到公网。lan 模式（`start-wb-proxy-lan.bat`）只用在内网可信环境，公网暴露请自行加反代 + TLS + 强 API Key。
+- 这套方案依赖上游「某模型免费」的商业策略，属于限时可行，随时可能失效。
+- 首次登录后立刻改掉面板默认密码 `admin`（看板「设置」页）。
+- 共享 / 借用账号池违反上游服务条款，风控后果自负。
