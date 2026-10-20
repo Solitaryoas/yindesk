@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { createRelativeLink } from "fumadocs-ui/mdx";
 import { DocsBody } from "fumadocs-ui/layouts/docs/page";
 import { getMDXComponents } from "@/components/mdx";
+import { siteConfig } from "@/lib/config";
 import { blogSource } from "@/lib/source";
 
 const formatDate = new Intl.DateTimeFormat("zh-CN", {
@@ -17,9 +18,26 @@ export default async function Page(props: PageProps<"/blog/[...slug]">) {
   if (!page) notFound();
 
   const MDX = page.data.body;
+  const pageUrl = `${siteConfig.url}${page.url}`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: page.data.title,
+    description: page.data.description,
+    url: pageUrl,
+    mainEntityOfPage: pageUrl,
+    datePublished: page.data.date.toISOString(),
+    inLanguage: "zh-CN",
+    author: { "@type": "Person", name: siteConfig.author, url: siteConfig.links.github },
+    publisher: { "@type": "Organization", name: siteConfig.name, url: siteConfig.url },
+  };
 
   return (
     <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-16">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <header className="mb-10 flex flex-col gap-4 border-b pb-10">
         <div className="flex flex-wrap items-center gap-3 text-sm text-fd-muted-foreground">
           <time dateTime={page.data.date.toISOString()}>
@@ -66,9 +84,14 @@ export async function generateMetadata(
   return {
     title: page.data.title,
     description: page.data.description,
+    alternates: { canonical: page.url },
     openGraph: {
       type: "article",
+      url: `${siteConfig.url}${page.url}`,
+      title: page.data.title,
+      description: page.data.description,
       publishedTime: page.data.date.toISOString(),
+      tags: page.data.tags,
     },
   };
 }

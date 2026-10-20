@@ -18,8 +18,11 @@ export async function generateMetadata(
   props: PageProps<"/blog/tag/[tag]">,
 ): Promise<Metadata> {
   const params = await props.params;
+  const tag = decodeURIComponent(params.tag);
   return {
-    title: `#${decodeURIComponent(params.tag)}`,
+    title: `#${tag}`,
+    description: `标签 #${tag} 下的全部文章。`,
+    alternates: { canonical: `/blog/tag/${encodeURIComponent(tag)}` },
   };
 }
 

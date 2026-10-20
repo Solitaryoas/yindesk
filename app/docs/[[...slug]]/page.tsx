@@ -8,6 +8,8 @@ import {
   DocsTitle,
 } from "fumadocs-ui/layouts/docs/page";
 import { getMDXComponents } from "@/components/mdx";
+import { siteConfig } from "@/lib/config";
+import { docOgId } from "@/lib/og";
 import { source } from "@/lib/source";
 
 export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
@@ -19,9 +21,25 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
   if (!page) notFound();
 
   const MDX = page.data.body;
+  const pageUrl = `${siteConfig.url}${page.url}`;
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    headline: page.data.title,
+    description: page.data.description,
+    url: pageUrl,
+    mainEntityOfPage: pageUrl,
+    inLanguage: "zh-CN",
+    author: { "@type": "Person", name: siteConfig.author, url: siteConfig.links.github },
+    publisher: { "@type": "Organization", name: siteConfig.name, url: siteConfig.url },
+  };
 
   return (
     <DocsPage toc={page.data.toc} full={page.data.full}>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription className="mb-0">{page.data.description}</DocsDescription>
       <div className="border-b pb-6" />
@@ -53,5 +71,26 @@ export async function generateMetadata(
   return {
     title: page.data.title,
     description: page.data.description,
+    alternates: { canonical: page.url },
+    openGraph: {
+      type: "article",
+      url: `${siteConfig.url}${page.url}`,
+      title: page.data.title,
+      description: page.data.description,
+      images: [
+        {
+          url: `${siteConfig.url}/docs/opengraph-image/${docOgId(page.url)}.png`,
+          width: 1200,
+          height: 630,
+          alt: page.data.title,
+        },
+      ],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: page.data.title,
+      description: page.data.description,
+      images: [`${siteConfig.url}/docs/opengraph-image/${docOgId(page.url)}.png`],
+    },
   };
 }

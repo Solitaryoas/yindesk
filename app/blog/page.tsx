@@ -4,6 +4,8 @@ import { blogSource } from "@/lib/source";
 
 export const metadata: Metadata = {
   title: "博客",
+  description: "随笔、教程与折腾记录。",
+  alternates: { canonical: "/blog" },
 };
 
 const formatDate = new Intl.DateTimeFormat("zh-CN", {

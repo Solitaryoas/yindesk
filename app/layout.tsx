@@ -21,6 +21,32 @@ export const metadata: Metadata = {
     template: `%s | ${siteConfig.name}`,
   },
   description: siteConfig.description,
+  applicationName: siteConfig.name,
+  authors: [{ name: siteConfig.author, url: siteConfig.links.github }],
+  creator: siteConfig.author,
+  openGraph: {
+    type: "website",
+    locale: "zh_CN",
+    siteName: siteConfig.name,
+    url: siteConfig.url,
+    title: {
+      default: `${siteConfig.name} - ${siteConfig.description}`,
+      template: `%s | ${siteConfig.name}`,
+    },
+    description: siteConfig.description,
+  },
+  twitter: {
+    card: "summary",
+    title: {
+      default: `${siteConfig.name} - ${siteConfig.description}`,
+      template: `%s | ${siteConfig.name}`,
+    },
+    description: siteConfig.description,
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

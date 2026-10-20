@@ -4,6 +4,8 @@ import { siteConfig } from "@/lib/config";
 
 export const metadata: Metadata = {
   title: "关于",
+  description: "关于 Yin：开发者，关注 AI 编程、Agent 与 Web 开发。",
+  alternates: { canonical: "/about" },
 };
 
 export default function AboutPage() {
