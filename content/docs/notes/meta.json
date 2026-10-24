@@ -10,6 +10,8 @@
     "ai-agents",
     "trae-review",
     "jeepay-guide",
-    "workbuddy-proxy"
+    "workbuddy-proxy",
+    "oak-guide",
+    "backend-learning-map"
   ]
 }
