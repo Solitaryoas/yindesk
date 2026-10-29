@@ -36,17 +36,7 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
   };
 
   return (
-    <DocsPage
-      toc={page.data.toc}
-      full={page.data.full}
-      footer={{
-        children: (
-          <div className="flex justify-end">
-            <LastUpdated date={page.data.lastModified} />
-          </div>
-        ),
-      }}
-    >
+    <DocsPage toc={page.data.toc} full={page.data.full}>
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
@@ -61,6 +51,9 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
           })}
         />
       </DocsBody>
+      <div className="flex justify-end">
+        <LastUpdated date={page.data.lastModified} />
+      </div>
     </DocsPage>
   );
 }
