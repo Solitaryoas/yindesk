@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { createRelativeLink } from "fumadocs-ui/mdx";
 import { DocsBody } from "fumadocs-ui/layouts/docs/page";
+import { LastUpdated } from "@/components/last-updated";
 import { getMDXComponents } from "@/components/mdx";
 import { siteConfig } from "@/lib/config";
 import { blogSource } from "@/lib/source";
@@ -66,6 +67,9 @@ export default async function Page(props: PageProps<"/blog/[...slug]">) {
           })}
         />
       </DocsBody>
+      <div className="mt-8 flex justify-end">
+        <LastUpdated date={page.data.lastModified} />
+      </div>
     </main>
   );
 }

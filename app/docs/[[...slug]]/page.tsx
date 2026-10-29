@@ -7,6 +7,7 @@ import {
   DocsPage,
   DocsTitle,
 } from "fumadocs-ui/layouts/docs/page";
+import { LastUpdated } from "@/components/last-updated";
 import { getMDXComponents } from "@/components/mdx";
 import { siteConfig } from "@/lib/config";
 import { docOgId } from "@/lib/og";
@@ -35,7 +36,17 @@ export default async function Page(props: PageProps<"/docs/[[...slug]]">) {
   };
 
   return (
-    <DocsPage toc={page.data.toc} full={page.data.full}>
+    <DocsPage
+      toc={page.data.toc}
+      full={page.data.full}
+      footer={{
+        children: (
+          <div className="flex justify-end">
+            <LastUpdated date={page.data.lastModified} />
+          </div>
+        ),
+      }}
+    >
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}

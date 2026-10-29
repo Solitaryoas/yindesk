@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 完整历史，便于 fumadocs 通过 git log 获取文章的“最后编辑时间”
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22

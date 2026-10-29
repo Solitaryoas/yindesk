@@ -6,11 +6,13 @@ import { z } from "zod";
 
 export const docs = defineDocs({
   dir: "content/docs",
+  docs: { lastModified: true },
 });
 
 export const blogCollection = defineCollections({
   type: "doc",
   dir: "content/blog",
+  lastModified: true,
   schema: pageSchema.extend({
     date: z.coerce.date(),
     tags: z.array(z.string()).default([]),
