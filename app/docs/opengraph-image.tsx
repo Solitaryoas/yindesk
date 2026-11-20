@@ -1,20 +1,20 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { ImageResponse } from "next/og";
 import { siteConfig } from "@/lib/config";
 import { docOgId, getDocPages } from "@/lib/og";
 
 const size = { width: 1200, height: 630 };
 
-// satori 只支持 ttf/otf/woff，不支持 woff2；构建期拉取一次并缓存，失败则退回内置拉丁字体
-const FONT_URL =
-  "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-sc@0.2.3/NotoSansSC_400Regular.ttf";
+// satori 只支持 ttf/otf/woff，不支持 woff2；字体随仓库提供，避免构建期从 CDN 拉 8MB 文件超时
+const FONT_PATH = path.join(process.cwd(), "app/docs/_fonts/NotoSansSC-Regular.ttf");
 
-let fontCache: ArrayBuffer | null | undefined;
+let fontCache: Buffer | null | undefined;
 
 async function loadFont() {
   if (fontCache !== undefined) return fontCache;
   try {
-    const res = await fetch(FONT_URL, { cache: "force-cache" });
-    fontCache = res.ok ? await res.arrayBuffer() : null;
+    fontCache = await readFile(FONT_PATH);
   } catch {
     fontCache = null;
   }
@@ -152,7 +152,14 @@ export default async function Image({ id }: { id: Promise<string> }) {
     {
       ...size,
       fonts: fontData
-        ? [{ name: "Noto Sans SC", data: fontData, style: "normal", weight: 400 }]
+        ? [
+            {
+              name: "Noto Sans SC",
+              data: new Uint8Array(fontData).buffer,
+              style: "normal",
+              weight: 400,
+            },
+          ]
         : [],
     },
   );

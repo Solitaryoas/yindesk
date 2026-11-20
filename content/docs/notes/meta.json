@@ -14,6 +14,8 @@
     "backend-learning-map",
     "ai-era-backend-growth",
     "agent-harness",
-    "openviking"
+    "context-rot",
+    "openviking",
+    "elasticsearch-rag"
   ]
 }
