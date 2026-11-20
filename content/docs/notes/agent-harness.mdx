@@ -1,0 +1,373 @@
+---
+title: Agent 交付链路三件套：LoopForge / HiFox / Co-Sight Harness
+description: 从需求进入到交付完成，拆解三者各自的链路、控制面与适用边界
+---
+
+先给结论：**这三者不在同一层，不能互相替代，也不该同时当流程引擎用。**
+
+- **HiFox** 在**团队协作面**：任务从哪来、派给谁、谁验收。它明确不做 Agent，也不替你写代码（[欢迎文档](https://help.hifox.com/docs/welcome)）。
+- **LoopForge** 在**交付流程编排面**：把一条需求拆成固定阶段，每个阶段交给不同角色，脚本和人工关口卡在中间，跑在 Docker 沙箱里（[README](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md)）。
+- **Co-Sight Harness** 在**单条长链路的运行时控制面**：状态机、控制资产、Hook、证据链，目标是把 200 步以上的业务链路跑稳（[README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)、[论文](https://arxiv.org/abs/2611.17696)）。
+
+```text
+团队协作面        HiFox            任务 / 看板 / 派工 / 验收 / 自动化触发
+                   |
+交付流程编排面    LoopForge        SOP 图 / 角色分离 / 沙箱 / 脚本门禁 / 人工关口
+                   |
+运行时控制面      Co-Sight Harness 状态机 / 控制资产 / Hook / 评估 / 证据链
+                   |
+执行内核          Claude Code / Codex / CodeBuddy / DSH ...（真正读写代码的 CLI）
+```
+
+一句话记法：**HiFox 管“谁做”，LoopForge 管“按什么步骤做”，Co-Sight Harness 管“这一步凭什么叫作做完了”。**
+
+## 术语对齐
+
+| 词 | 本文含义 | 对应产品 |
+| --- | --- | --- |
+| Agent | 持久化的“怎么工作”配置：指令、技能、Runtime、仓库、环境 | HiFox 的核心对象 |
+| Runtime | 真正执行任务的 CLI，例如 Claude Code、Codex、DSH | HiFox 的机器概念；Co-Sight 的宿主对象 |
+| SOP | 节点图（Agent / 脚本 / 人工关口 / 子 SOP / 预览），带版本 | LoopForge 的核心对象 |
+| Harness | 围绕概率模型建立的运行时控制结构：目标、状态、上下文、工具、权限、验证、证据 | Co-Sight Harness 的产品定义 |
+| 控制资产 | 模型之外、可版本化的流程定义、状态、验收标准、领域知识 | Co-Sight 论文的核心概念 |
+
+## LoopForge
+
+### 基本盘
+
+| 项 | 事实 |
+| --- | --- |
+| 定位 | 自托管团队工作台，编排 coding agent 交付软件（[README](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md)） |
+| 语言栈 | Go 后端 + 内嵌 Web；内部仍沿用 `agentflow` 模块名和 `AGENTFLOW_` 环境变量（[architecture.md](https://github.com/Tencent/LoopForge/blob/main/docs/architecture.md)） |
+| 部署依赖 | Docker（含 Compose）+ Python 3；`./start.sh` 拉取固定 GHCR 镜像并创建 MySQL 与平台服务，默认监听 `0.0.0.0:8090`（[README](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md)） |
+| 沙箱 | SOP 运行和对话工作区都起 Docker 容器，由平台通过宿主机 Docker socket 控制 |
+| License | MIT，附第三方组件署名（[LICENSE](https://github.com/Tencent/LoopForge/blob/main/LICENSE)） |
+| 版本 | 仓库 2026-07-28 创建；v0.1.0 发布于 2026-08-07，v0.3.0 于 2026-11-06，v0.4.0 于 2026-11-17（[releases](https://github.com/Tencent/LoopForge/releases)） |
+| 活跃度 | 2026-11-20 抓取：3.2k stars、451 forks、188 open issues（[GitHub API](https://api.github.com/repos/Tencent/LoopForge)） |
+
+### SOP 节点与内置流程
+
+流程设计器可编排**五类节点**：Agent、脚本、人工关口、子 SOP、预览构建（[README 功能一览](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md)）。预览节点负责构建静态站点并归档，供评审查看；不是独立产品，而是流程里的一个交付物节点。
+
+内置四套通用 SOP：**后端交付、前端交付、缺陷修复、产品方案**（同上）。产品方案不绑定仓库也能跑，缺陷修复需要提供待修代码与复现材料。
+
+一条“完整交付 SOP”的六阶段是这样走的：
+
+| 阶段 | 节点类型 | 典型产出 | 失败后 |
+| --- | --- | --- | --- |
+| 澄清 | Agent（实际默认 CodeBuddy） | `requirement.md` | 打回澄清或终止 |
+| 设计 | Agent | `design.md` | 打回设计 |
+| 实现 | Agent（开发者角色） | `patch.diff` | 脚本门禁失败 → 附日志打回实现，重试上限 3 |
+| 评审 | Agent（独立评审角色，另一执行器/模型） | `review.md` | 打回实现 |
+| 运行测试 | Script | `go test ./...`、`npm run test:e2e` 的退出码与日志 | 失败打回实现 |
+| 人工验收 | Human gate | 验收凭据 + PR | 人可打回到任意指定环节 |
+
+这张表不是宣传图：官网的演示实例就是“Clarify 用 CodeBuddy、Design 用 Codex、Implement 用 Claude Code、Review 用 CodeBuddy、测试用 `go test`、最后人工签收”，实现节点上还标了门禁 `exit 0` 与 `retry ≤ 3`（[loopforge.cn](https://loopforge.cn)）。
+
+### 关键机制
+
+**角色分离**：方案、实现、评审、测试各自的角色拥有独立的**提示词、执行器、模型、规则、Skills、MCP 工具**，外加产物与门禁定义；同一角色既能当 SOP 节点，也能在对话里被 Main Bot 当子 Agent 调用。写代码的 Agent 不能同时当评审者（[README](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md)）。
+
+**执行器**：这里有个容易夸大的点。对话首页和 SOP 角色下拉里是**三选一：CodeBuddy、Codex、Claude Code**；内置角色默认 CodeBuddy，需求澄清和通知汇总也固定走 CodeBuddy。镜像内置 CodeBuddy、Codex、DeepSeek Harness，Claude Code 首次使用时从 npm 安装。部署文档另外覆盖 OpenCode、Kimi Code、Pi、Cursor CLI、Antigravity、ZCode 的安装路径——所以“约 10 种执行器”指的是**可安装的 CLI 覆盖面**，不是产品 UI 里都能选（[deployment.md](https://github.com/Tencent/LoopForge/blob/main/docs/deployment.md)）。
+
+**人工审批门**：位置由设计器决定，可以放在任意环节；内置 SOP 放在测试通过之后、交付之前。所有待办集中到“待我确认”。审批后写入的是**验收凭据**（发起人、依据、来源会话/generation/消息序号、时间），并且文档明确：验收不会把没跑的测试改成通过，也不代表已合并（[bot-sop-controls.md](https://github.com/Tencent/LoopForge/blob/main/docs/bot-sop-controls.md)）。
+
+**RSI 复盘评分**：每次运行后按完整 trace 打 0–100 分，**基线 70 分**；维度包括控制流、时间与等待、工具浪费、Token 效率、错误恢复、完整性。改进项一键写回三类对象：SOP（如“失败回退到设计、重试上限 3→2”）、角色指南、质量门禁；写回生成新版本，本次运行的快照保持不变（[loopforge.cn](https://loopforge.cn)）。更细的输入事实（重试次数、返工、来回发送、失败工具调用、耗时、token、错误）见于第三方评测文，仓库文档未给出权重公式（[腾讯云社区](https://cloud.tencent.com/developer/article/2787997)）。
+
+**状态与续跑**：运行记录、任务、问题、检查点、验收快照都在 MySQL；MySQL 数据在 Compose 卷里；CLI 装在 `$LOOPFORGE_DATA_DIR/cli`；工作区产物落在运行工作目录并可按节点快照。支持暂停、重试失败步骤、从任意节点重跑；分支节点被取消后重跑会恢复被取消的兄弟分支（[architecture.md](https://github.com/Tencent/LoopForge/blob/main/docs/architecture.md)、[deployment.md](https://github.com/Tencent/LoopForge/blob/main/docs/deployment.md)）。
+
+### 限制
+
+- **不是多租户隔离**。平台持有宿主机 Docker socket，官方明说只适合可信团队（[README](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md)）。
+- **公开版只有 GitHub 适配器**。GitLab/Gitea 只能通过 Git SSH 克隆与推送，托管平台 API（PR 发现、合并、状态刷新）要自己写适配器或接 MCP；TAPD 入口默认隐藏（[open-source-scope.md](https://github.com/Tencent/LoopForge/blob/main/docs/open-source-scope.md)）。
+- 公开仓库不含私有 seed 和生产提示词，公开的只是“后端/前端/产品/缺陷”四套通用定义。
+- 不附模型额度，执行器 Key 自备；原生部署需要自己在 PATH 上准备 CLI。
+- **LoopForge Local 的宿主有限**：官方支持 Claude Code、CodeBuddy、Codex、Cursor（Pi 仅 Portable 版），**不含 Trae**；Local 目前只能跑内置工作流，把平台 SOP 导出到本地独立执行仍是后续方向（[README 的 Local 一节](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md#loopforge-local)）。
+
+## HiFox
+
+### 基本盘
+
+| 项 | 事实 |
+| --- | --- |
+| 定位 | 多人与多 Agent 协作平台 / Agent 工作管理系统；任务仍是协作中心，Agent 只是执行者（[welcome](https://help.hifox.com/docs/welcome)） |
+| 明确不做 | 不做代码 Agent，不替代 Claude Code、Codex、Cursor；token 走你已有的 Coding Plan 或 API Key（[welcome](https://help.hifox.com/docs/welcome)、[hifox.cn](https://www.hifox.cn/)） |
+| 形态 | SaaS；私有化部署版按使用人数收费、部署在企业内部（[hifox.com](https://hifox.com)） |
+| 是否开源 | 未找到公开源码仓库，官网与文档也未提供源码许可说明；按闭源产品对待 |
+| Runtime | 文档不给固定清单，明确“用户可见的 Runtime 名称以线上为准”；官网私有化区块写“支持连接 20+ coding agent”（[computers](https://help.hifox.com/docs/agent-and-computer/computers)、[hifox.com](https://hifox.com)） |
+| 代码执行位置 | 你自己的机器：安装本地服务后登记为“机器”，Runtime 以机器上的 CLI 为准（BYOC） |
+
+### 一条任务的完整链路
+
+```text
+建单（Backlog / 看板 / 评论 / Jira 导入 / 飞书 @ / Webhook）
+  → 设置处理人（人 / Agent / 小队，可临时覆盖模型）
+  → 任务处于可执行状态则自动开跑（Backlog 里只等待，不动）
+  → HiFox 组装上下文：标题、描述、状态、类型、优先级、处理人、
+     最近评论、空间/专项/标签、Agent 指令、Skills、绑定仓库、环境变量与密钥
+  → 派发到机器上的本地服务
+  → 准备代码：默认建独立 worktree（也可指定目录直接跑）
+  → 启动 Runtime（Claude Code / Codex / ...）
+  → 读代码、改文件、跑命令
+  → 进展、阻塞、测试结果写回任务对话
+  → 人 review worktree 改动 → 保留 / 合并 / 丢弃
+```
+
+细节来自 [Agent 如何执行任务](https://help.hifox.com/docs/agent-and-computer/agent-task-execution)。几个常被忽略的约束：
+
+- **两套状态不是一套**。运行状态是排队中 / 启动中 / 处理中 / 已完成 / 失败 / 已取消；任务生命周期状态（Backlog / Todo / In Progress …）另算。排队超时默认 24 小时，超时按失败处理。
+- **worktree 命名有规约**：任务结果提交到 `<产品>-agent/<Agent 名称>/<任务编号>` 分支，例如 `hifox-agent/thor/HF-3341`；对话产生的改动以会话 ID 结尾。
+- **指定已有目录会退化**：同一目录一次只能跑一个任务，后来的排队；非 Git 目录只能直接运行，没有隔离。
+
+### 小队（Crew）
+
+小队 = 一个队长 Agent + 若干成员（成员可以是 Agent，也可以是人）。队长**必须是 Agent**，创建时自动进成员列表；所有者是组织成员，只负责管理，不替代队长的执行角色。队长的职责是理解任务、判断是否需要派成员、协调分工、汇总结果；适合“调研 / 实现 / 测试 / review”这种需要拆解的活，小任务不该用（[crews](https://help.hifox.com/docs/agent-and-computer/crews)）。
+
+### 自动化与集成边界
+
+自动化 = 触发器 + 执行者（Agent 或小队）+ 指令 + 输出 + 运行历史。触发器有四类：**定时、任务状态变更、评论关键词、Webhook**。Webhook 是私密 URL，成功接收返回 202，可开签名校验和 IP 白名单；状态变更与评论类自动化必须指定负责人（默认触发者）。运行结果进收件箱，按自动化聚合，保留每次 Agent Run、结果与错误（[automations](https://help.hifox.com/docs/space/automations)）。
+
+集成侧的边界要说清楚：
+
+- **Jira**：支持一次性导入（issue/epic）与“项目 ↔ 空间”绑定后的双向同步；epic 同步为专项，labels 同步为标签，issue links 同步为任务关联，评论与附件保留，可按需把 HiFox 侧更新写回 Jira。新同步进来的 issue 可先进分拣台（[jira](https://help.hifox.com/docs/integration/jira)）。
+- **TAPD / 禅道**：同一套“导入 + 绑定同步”模型，另有 CSV/Excel 导入路径（[welcome](https://help.hifox.com/docs/welcome)）。
+- **飞书**：在话题里 @ HiFox 的 Agent，可把讨论整理成任务（带截图与结论），进展同步回原话题（[welcome](https://help.hifox.com/docs/welcome)）。
+- **钉钉 / 企业微信**：未在官方文档中找到对应集成页，按“未确认”处理。
+
+### 限制
+
+- **闭源 + 平台依赖**：所有任务、Agent、运行记录都在 HiFox 里；私有化是付费项，报价按人数。
+- **能力上限取决于底层 Runtime**：同一个 Agent 换 Runtime 就是换智力与工具面；HiFox 不保证模型效果（[agents](https://help.hifox.com/docs/agent-and-computer/agents)）。
+- **Runtime 有接入限制**：例如 TRAE 只有企业旗舰版可接入；桌面版或 IDE 插件装过，不代表 CLI 可被检测到。
+- 文档刻意不维护固定 Runtime 清单，任何“30+ Runtime”的说法都需要以线上为准。
+
+## Co-Sight Harness
+
+### 先厘清它不是什么
+
+同一个仓库里有三块东西，各自独立演进：`Co-Sight`（类 Manus 的研究报告智能体）、`Co-Knowledge`（知识工作室）、`Co-Sight Harness`（围绕模型的 Agent 宿主）（[multirepo README](https://github.com/ZTE-AICloud/Co-Sight)）。
+
+“Co-Sight 超级智能体 2.0 登顶 GAIA”说的是**第一个**：中兴官方新闻称其以 84.39% 的综合成绩位列 GAIA 榜首（[中兴新闻，2025-09-26](https://www.zte.com.cn/content/zte-site/www-zte-com-cn/china/about/news/20250926C1.html)）。Harness 不是那个智能体，也不跑 GAIA；它是把 Claude Code、Codex、DSH 串在一个前后端外壳里、给长链路业务任务加控制结构的**本地优先宿主**（[README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)）。
+
+### 基本盘
+
+| 项 | 事实 |
+| --- | --- |
+| 版本 / 形态 | 0.1.0；本地优先，分发包离线可用，不需管理员权限（[QUICKSTART](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/QUICKSTART.md)） |
+| 环境 | Node `^22.19.0` 或 `>=24`；源码开发要 pnpm 11.28.5；Linux x64 / Windows x64；数据盘 ≥512 MB |
+| 运行时 | Claude Code、Codex、DSH；Claude Code CLI `>= 2.1.287`（装插件用，可 `--skip-plugins`） |
+| License | Apache-2.0（README 徽章与各组件 LICENSE） |
+| 活跃度 | 仓库 2026-11-17 仍有推送；主仓 1.08k stars、288 forks（[GitHub API](https://api.github.com/repos/ZTE-AICloud/Co-Sight)） |
+
+### 八个组件
+
+| 组件 | 形态 | 职责 | 版本 |
+| --- | --- | --- | --- |
+| `framework` | 服务 | 统一外壳：Fastify API + Web 工作区 + 模块 iframe 宿主 | 0.1.0 |
+| `cosight-viewer` | 服务 | 任务中心：Claude Code 会话观测与任务管理 | 1.2.1 |
+| `smart-factory` | 服务 | 智慧工厂：对话式创建、预览、评估 Agent | 0.1.0 |
+| `drive` | 插件 | 声明式多 Agent 编排：phase / dag 两种模式 | 2.3.4 |
+| `agent-genesis` | 插件 | 自然语言需求 → 可运行 Agent / Skill（Claude Code 与 DSH 双平台） | 0.23.0 |
+| `agent-evaluator` | 插件 | 黄金集评测、E2E 用例生成/执行/评分、trace 审计（安装 ID `goldeval`） | 1.0.0 |
+| `skill-optimizer` | 插件 | Skill 评测-优化循环：评测 → 缺口分析 → 优化 → 再评测 | 1.0.0 |
+| `cosight-bot` | 插件 | 知识管理 + 标书应答 | 0.1.0 |
+
+另有 `dsh-compat` 兼容层，把五个插件挂到 DeepSeek Harness 原生表面（[组件清单](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)）。
+
+### 控制资产到底外置了什么
+
+原则只有一条：**控制数据外置于模型**。四个控制面分别是业务（Goal / Constraint / Acceptance / Risk）、执行（Orchestrator / Loop / Graph / State / Checkpoint）、资产（Knowledge / Memory / Tool / Skill / Policy）、证据（Trace / Eval / Review / Version / Rollback）（[README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)）。
+
+落到文件上，Drive 的 `.drive/<plan_dir>/` 是这样的：
+
+```text
+.drive/<plan_dir>/
+├── intent.md             # 需求意图与边界
+├── manifest.md           # 控制文件清单与版本
+├── taskRecord.yaml       # planner 输出的任务列表（子任务拆分）
+├── waves.yaml            # 拓扑排序后的波次、并行度与预算
+├── executeState.json     # 运行时状态（文件锁 + revision）
+├── evaluation/           # L0/L1/L2 评测证据与 verdict
+├── run-log.jsonl         # 跨阶段审计日志
+└── artifacts/<task_id>/  # SUMMARY.md、REVIEW.md 等逐任务产物
+```
+
+再加上两样不在目录里的：`workflow.yaml`（定义有哪些岗位、阶段怎么走、gate 怎么配）和 Agent/Skill 定义本身（含 DOD、检查脚本）（[drive README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/drive/README.md)）。这正好对应用户关心的“项目概要、路线图、执行计划、子 Agent 拆分、验收标准、状态模板、测试用例”——只是它不叫这些名字，而是 intent / taskRecord / waves / output_schema / executeState / golden cases。
+
+### 五阶段与岗位
+
+官方描述是**五阶段流水线：start → analyze → plan → execute → evaluate**，每个阶段有专属 agent。Agent 层实际是 **7 个岗位：4 个阶段主力 + 2 个只读审查者 + 1 个 HITL 中介**（`gate-human`，不调 LLM，只等人决策）。
+
+需要纠正一个常见说法：**没有“核算”这个岗位**。一手文档里找不到“分析/规划/执行/评估/核算”的五岗划分，只有上述阶段与岗位（同上）。
+
+生成与评估的隔离是硬性的：执行者不给自己打分，校验者独立于执行者，确定性逻辑从提示词剥离到 Hook 与脚本，DOD 审查通过才推进（[README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)）。
+
+### 状态机与 Hook 如何防模型改流程
+
+模型能改什么、不能改什么是靠 Hook 的 default-deny 实现的：
+
+| Hook | 拦截点 | 作用 |
+| --- | --- | --- |
+| `planning_write_guard.py` | PreToolUse on Write/Edit/MultiEdit | `.drive/` 写入白名单，默认拒绝；`executeState.json`、`run-log.jsonl` 必须走 CLI |
+| `state_transition_guard.py` | PreToolUse on Write/Edit/Bash | 状态机合法迁移表 + 跨阶段产物污染拦截 |
+| `audit_events.py` | PreToolUse on Bash/Task/Agent/Skill | 事件追加到 `run-log.jsonl` |
+| `subagent_report_guard.py` | SubagentStop | 校验子 Agent 报告格式 |
+| `state_rules.py` | 基础设施 | `VALID_TRANSITIONS` / `STAGES` / `VERDICT_REQUIRED_TARGETS` 的唯一权威定义 |
+
+人工放行也做成了权限：`confirm_stage.py` 是唯一放行通道，主对话没有它的免确认授权；DAG 模式下 `confirm_node.py` 不在任何 allowed-tools 内，执行时必然弹权限框，用户点确认才写 `confirmed_nodes[]`。想一路跑完就开 `auto_mode`（[drive README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/drive/README.md)）。
+
+所以边界是：**模型可以写业务产物、在允许目录交付文件、调用技能、雇子 Agent 补能力；不能改 `workflow.yaml` 的组织结构、不能直接写状态文件、不能跳过 gate、不能做非法状态迁移。**
+
+### 分批并行、对账与续跑
+
+- **并行**：DAG 模式先拓扑排序，再由 `schedule-waves` 切波次，同一波内在一次消息里并发 spawn 多个 Agent。
+- **对账**：`wave-barrier aggregate` 强制比对 worker summary 的 task_id 集合与 `waves.yaml[wave_n].tasks`，缺、多、重复都拒绝写状态。这是“强对账”，不是事后汇总。
+- **续跑**：状态与检查点全部外置，任务今天停了明天从断点继续；执行模式内置 wave / whitelist / retry / checkpoint 四种（同上）。
+
+### 评估怎么下钻
+
+Drive 的质检分三层：
+
+| 层 | 检查什么 | 手段 | 覆盖 |
+| --- | --- | --- | --- |
+| L0 | 文件是否存在、格式是否合法 | 确定性 shell（ls/find/wc/stat） | 100% |
+| L1 | Lint / 格式 / 类型 | markdownlint、eslint、tsc、ruff | 100% |
+| L2 | 验收标准（AC）的语义 | LLM Judge + 5 维 rubric | 0–100% |
+
+最终 verdict 是 `PASS / FAIL / INCOMPLETE` 三态，不是简单加权（同上）。下钻到单个 Step 靠的是 `output_schema.artifacts[]` 里声明的 `path_pattern` / `min_count` / `min_lines`：每个 task 的产物先过 L0/L1，再过 L2，完不成就是 INCOMPLETE，不会因为“看起来差不多”放行。
+
+GoldEval 负责的是**黄金集与回归**：黄金用例评测、E2E 用例生成/执行/评分、trace 轨迹审查。典型用法是改完 workflow 或 skill 后先跑黄金集，回归通过才允许合入；`skill-optimizer` 再按缺口做“评测→优化→再评测”的循环（[组件清单](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)）。论文把这条约束写得更硬：**控制资产只有在回归检查 + 人工批准后才允许更新**（[论文摘要](https://arxiv.org/abs/2611.17696)）。
+
+### 检索双引擎
+
+资产控制面写的是“运行态检索让 Agent 找得到，生产态构建让知识补得全”。运行态的路径是：业务语言先做语义对齐，翻译成研发术语，再召回历史相似经验、做渐进式全文检索，最后汇总返回；生产态则是在平时把经验做成可检索、可编排、可审计的资产（[README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)、[第三方解读](https://m.sohu.com/a/1103727372_122105141/)）。语义对齐这一步是关键：它解决的是“用户说的业务词”和“文档里的研发词”不在一个词表里的问题。
+
+### 安装与运行
+
+```bash
+# 分发包：解压 → 安装 → 启动 → 打开 127.0.0.1:4300
+./install.sh && ./start.sh
+
+# 源码态
+pnpm install && pnpm dev        # 框架
+pnpm dev:all                    # 连模块
+```
+
+五个插件的安装 ID 是 `插件名@marketplace 名`，不是目录名：`drive@zte-ai-lab`、`agent-genesis@agent-genesis`、`goldeval@goldeval`、`skill-optimizer@skillx`、`cosightbot@cosightbot`。也可以 `install-dsh.sh` 一条命令全部装进 DSH（[README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md)）。模型端点不在 Harness 里配，走各 Runtime 自己的凭据；论文的前提就是“backbone 固定，不动模型”。
+
+### 效果数字（全部为官方口径）
+
+| 指标 | 官方数字 | 来源 |
+| --- | --- | --- |
+| 无人干预端到端完成率（Domain A，120 例） | 50% → 100% | 论文摘要 |
+| 端到端时延 | 440 → 159 分钟 | 论文摘要 |
+| 检索召回 | 56% → 91.67% | 论文摘要 |
+| 场景分析召回 | 45% → 93% | 论文摘要 |
+| 需求分析耗时 | 169 → 56.4 分钟 | Harness README |
+| 子系统设计耗时 | 114 → 26.5 分钟 | Harness README |
+| 场景子任务 F1 | 68% → 91.25% | Harness README |
+| 新用例搭建 | 2–4 小时 → 5–10 分钟 | Harness README |
+
+没有找到第三方复现，也没有找到“组织效率 60%→90%”的一手出处。论文另称另外两个业务域由未写资产的团队分别用 4 天、7 天接管——这是可迁移性的证据，不是效果指标。
+
+### 限制
+
+- **0.1.0 的早期项目**：组件版本参差（viewer 1.2.1、drive 2.3.4、genesis 0.23.0），Drive README 自己把 License 写成“待定”，以仓库根 LICENSE 为准。
+- **平台窄**：Linux x64 / Windows x64，macOS 未在预检表里。
+- **运行时少**：Claude Code、Codex、DSH 三条，且都在 CLI 层；没有桌面端/IDE 的适配。
+- **重**：要装 Node、pnpm（源码）、Python 3、Claude Code CLI，还要自己接模型凭据；不适合“今天就想跑个 demo”。
+- **文档以中文为主**，论文与 README 的口径不完全一致（F1 只在 README 出现）。
+
+## 横向对比
+
+| 维度 | LoopForge | HiFox | Co-Sight Harness |
+| --- | --- | --- | --- |
+| 所处层级 | 交付流程编排 | 团队协作 | 单链路运行时控制 |
+| 抽象单位 | 一条 SOP（节点图） | 一个任务（工单） | 一次 run（阶段 + 波次） |
+| 状态存哪 | MySQL + 工作区快照 | HiFox 平台（SaaS / 私有化） | `.drive/` 文件 + 本地服务 |
+| 谁可以改状态 | 引擎写，人可打回/重跑 | 平台写，人可改任务状态 | 只有 CLI，Hook default-deny |
+| 隔离边界 | Docker 沙箱 | 每任务独立 worktree | 状态机 + 文件白名单（无容器） |
+| 人工介入点 | 人工关口（位置可配） | 派活、验收、评论 | 阶段确认、DAG gate、计划评审 |
+| 质量门禁 | 脚本退出码 + 人签收 | 人 review + Runtime 自身测试 | L0/L1/L2 + 黄金集 + 回归 |
+| 可观测性 | 节点状态 / 工具轨迹 / Worker 日志 / 产物快照 | 看板 / 收件箱 / 执行转录 | 审计日志 / 评测证据 / 版本回滚 |
+| 扩展方式 | 自定义 SOP、角色、MCP、Skills | 自定义 Agent、Skills、Runtime | 改 `workflow.yaml`、Skill、Hook |
+| 部署 | 自托管（Docker + MySQL） | SaaS 免费 / 私有化付费 | 本地安装（离线可分发包） |
+| License | MIT | 闭源 | Apache-2.0 |
+| 主要锁定风险 | 平台自身的 SOP 资产格式 | 平台 + 订阅 | 早期版本 + 组件版本漂移 |
+
+## 组合方式与反模式
+
+**能组合，但要一人一岗。**
+
+- **HiFox 前台 + Co-Sight Harness 重链路**：HiFox 负责接单、派工、验收、通知；把 Harness 包装成一个可被 HiFox 调用的 Runtime/CLI，长链路在 Harness 里跑。这里要补一层适配，因为 Harness 不在 HiFox 的 Runtime 清单里。
+- **LoopForge 管标准交付 + Harness 管超长节点**：LoopForge 的 Agent/脚本节点本质是调 CLI，可以把 Harness 的一个入口当成“脚本节点”塞进 SOP；审批仍在 LoopForge，Harness 内部 gate 用 `auto_mode` 或只做阶段确认。
+- **HiFox + LoopForge**：理论上 HiFox 派单、LoopForge 执行，但两者都自带任务状态、沙箱/工作区、审批动作，直接拼会出现**双账本**（HiFox 的任务状态 vs LoopForge 的 run 状态）和**双审批**。要组合必须明确“哪边是唯一事实源”，通常让 HiFox 只做入口与验收，LoopForge 的 run 详情不回流。
+
+**反模式：**
+
+1. **三套都当流程引擎**：三套都有状态机，都会写“当前进行到哪”，最后没人知道以谁为准。
+2. **两个地方各审一次**：HiFox 的“等人审阅”和 LoopForge 的人工关口叠在一起，交付节奏被砍半。
+3. **用 Harness 做短任务**：为一条改文案的需求装 Node + Python + Claude Code CLI，再走五阶段，成本远高于直接用 Claude Code。
+4. **用 LoopForge 做 200 步知识链路**：SOP 图适合“阶段固定、节点可枚举”，不适合“每步都要检索历史经验、逐步对账”的长链路。
+5. **把 HiFox 当 Agent 能力来源**：它不提供模型能力，Runtime 不行就是不行，换平台救不了。
+
+## 选型决策树
+
+```text
+你的问题是什么？
+├─ 我一个人 / 两三个人，只想让 Agent 稳定把活干完
+│   ├─ 已在用 Claude Code / Codex，想要阶段和验收 → LoopForge Local（装进 CLI）
+│   └─ 想要看板、派活、多人共享 → HiFox（SaaS 免费）
+│
+├─ 团队交付要标准化：同一类需求每次都走同样阶段、同样检查
+│   ├─ 代码/数据必须留在内网，能接受自己运维 → LoopForge（自托管）
+│   └─ 已在用 Jira/TAPD，非技术同事也要派活 → HiFox（绑定任务系统）
+│
+├─ 一条链路 200+ 步、跨天、知识密集、要审计和证据链
+│   └─ Co-Sight Harness
+│
+└─ 既要团队协作，又要长链路
+    └─ HiFox 接单 + Harness 执行；LoopForge 只在“标准短交付”这一层用
+```
+
+三条落地建议（按你的技术栈）：
+
+1. **Android 客户端 + RAG 的日常开发**：先用 LoopForge Local 或直接用 Claude Code，别上平台。你要的是“别跳步骤”，不是“多人协作”。
+2. **RAG 方向的知识密集链路**（文档解析 → 切分 → 评测 → 回归）：Co-Sight Harness 的思路最值得抄——把验收标准、状态、证据外置成文件，而不是塞进提示词。哪怕不用它的代码，这套 `.drive/` 结构也能直接搬。
+3. **要给别人演示“团队级 Agent 交付”**：HiFox 的免费 SaaS 最快出效果，但它证明的是协作面，不是你的 Agent 能力。
+
+## 待核实与风险提示
+
+- **HiFox 与 Apifox 的关系**：官网、帮助文档、`docs.hifox.cn` 都没有公司署名；但 Apifox 官方 apiskills 博客多次在文末推广 HiFox（[示例](https://apifox.com/apiskills/how-to-use-deepseek/)），可视为强旁证，仍无正式署名。
+- **HiFox Runtime 数量**：官网私有化区块写 20+，别处流传 30+；文档明确不维护固定清单，无法逐项核对。
+- **HiFox 钉钉/企业微信集成**：只有飞书的最佳实践有官方页面。
+- **LoopForge “前身是 AgentFlow”**：仓库内部模块名、环境变量、目录仍叫 `agentflow`，可作为强旁证；官方文档没有这句表述。
+- **LoopForge RSI 的输入权重与公式**：只有维度名、0–100 分、70 分基线，没有计算公式。
+- **LoopForge 首次公开发布时间**：v0.1.0 是 2026-08-07，不是流传的 11 月 16 日；11 月是 v0.3/v0.4 密集更新与上 Trending 的时间点。
+- **Co-Sight “五岗位含核算”**：一手文档是五阶段 + 7 岗位（4 主力 + 2 审查 + 1 HITL），没有“核算”。
+- **Co-Sight “组织 60%→90%”**：未找到出处。
+- **Co-Sight 论文附录里的控制资产完整清单**：arXiv HTML 抓取被截断，只逐条核对了正文与 README 的文件结构，附录未读完。
+- **三者都没有第三方复现数据**；所有效果数字均为官方自评。
+
+## 参考来源
+
+**LoopForge**
+
+- [GitHub 仓库](https://github.com/Tencent/LoopForge) · [中文 README](https://github.com/Tencent/LoopForge/blob/main/README.zh-CN.md) · [LICENSE](https://github.com/Tencent/LoopForge/blob/main/LICENSE) · [CHANGELOG](https://github.com/Tencent/LoopForge/blob/main/CHANGELOG.md)
+- [架构说明](https://github.com/Tencent/LoopForge/blob/main/docs/architecture.md) · [部署说明](https://github.com/Tencent/LoopForge/blob/main/docs/deployment.md) · [开源范围](https://github.com/Tencent/LoopForge/blob/main/docs/open-source-scope.md) · [Main Bot 交接与验收](https://github.com/Tencent/LoopForge/blob/main/docs/bot-sop-controls.md)
+- [官网（含 SOP 演示与 RSI 面板）](https://loopforge.cn) · [Releases](https://github.com/Tencent/LoopForge/releases) · [v0.4.0](https://github.com/Tencent/LoopForge/releases/tag/v0.4.0)
+- [腾讯云开发者社区：CodeBuddy 写、Codex 审、人拍板](https://cloud.tencent.com/developer/article/2787997)
+
+**HiFox**
+
+- [官网](https://hifox.com) · [备用域名](https://www.hifox.cn/) · [文档站](https://docs.hifox.cn) · [欢迎](https://help.hifox.com/docs/welcome)
+- [Agent](https://help.hifox.com/docs/agent-and-computer/agents) · [Agent 如何执行任务](https://help.hifox.com/docs/agent-and-computer/agent-task-execution) · [机器与 Runtime](https://help.hifox.com/docs/agent-and-computer/computers) · [小队](https://help.hifox.com/docs/agent-and-computer/crews)
+- [自动化](https://help.hifox.com/docs/space/automations) · [Jira 集成](https://help.hifox.com/docs/integration/jira)
+
+**Co-Sight Harness**
+
+- [仓库目录](https://github.com/ZTE-AICloud/Co-Sight/tree/master/Co-Sight%20Harness) · [README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/README.md) · [QUICKSTART](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/QUICKSTART.md) · [Drive 插件](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/drive/README.md) · [AgentGenesis](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight%20Harness/agent-genesis/README.md)
+- [论文（arXiv 摘要）](https://arxiv.org/abs/2611.17696) · [论文 HTML 版](https://arxiv.org/html/2611.17696v1) · [PDF](https://arxiv.org/pdf/2611.17696)
+- [Co-Sight 多仓说明](https://github.com/ZTE-AICloud/Co-Sight) · [Co-Sight 核心 README](https://github.com/ZTE-AICloud/Co-Sight/blob/master/Co-Sight/README-zh.md)
+- [中兴通讯：Co-Sight 2.0 登顶 GAIA](https://www.zte.com.cn/content/zte-site/www-zte-com-cn/china/about/news/20250926C1.html)
+- 第三方解读：[中兴开源企业级 Harness，内部 2000 人使用](https://m.sohu.com/a/1103727372_122105141/)
