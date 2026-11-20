@@ -1,0 +1,219 @@
+---
+title: OpenViking：把 Agent 上下文做成文件系统
+description: 从虚拟文件系统、L0/L1/L2 分层到 Hook 自动记忆，拆解一个上下文数据库的架构与边界
+---
+
+先给结论：**OpenViking 不是"又一个向量库"，而是把 Memory / Resource / Skill 统一抽象成 `viking://` 目录的上下文数据库。** 它卖的不是检索接口，而是"Agent 该看到什么、看多少"这套装载规则。
+
+一句话记法：**资料、记忆、技能都变成文件，目录摘要当索引，正文按需加载。**
+
+## 基本盘
+
+| 项 | 事实 |
+| --- | --- |
+| 定位 | 面向 AI Agent 的上下文数据库（Context Database），统一 Agent Memory、RAG 与 Skills（[GitHub](https://github.com/volcengine/OpenViking)） |
+| 开源方 | 火山引擎（volcengine），官网 [openviking.ai](https://openviking.ai/)，文档 [docs.openviking.ai](https://docs.openviking.ai/zh/getting-started/01-introduction) |
+| 仓库 | 2026-01-05 创建；2026-11-20 抓取 42,499 stars / 3,524 forks / 1,558 open issues（[GitHub API](https://api.github.com/repos/volcengine/OpenViking)） |
+| License | 服务端 AGPL-3.0；记忆插件 `agent-hook-plugin` 为 Apache-2.0（本地 `plugin.json` 实测） |
+| 形态 | 开源自建（本机 / 服务器 / Docker / Helm）、火山引擎托管云服务、企业私有化 K8s 交付（[部署模式](https://docs.openviking.ai/zh/getting-started/07-options)） |
+| 默认端口 | `1933`，REST API 与 `/mcp` 同进程同端口 |
+
+版本线要分开看：CLI 是 `ov`，服务端是 `openviking-server`，Agent 接入是独立发版的 hook 插件。三者版本号不同步，升级时别只升一个。
+
+## 数据模型：三层身份 + 四类上下文
+
+### 目录形态
+
+```text
+viking://
+├── user/<user_id>/          用户长期记忆（memories / peers / sessions / skills / privacy）
+├── agent/<agent_id>/        跨用户共享的 agent 能力（skills / tools / endpoints）
+├── resources/               不绑定用户的公共知识资源
+└── system/                  模板、编译产物等系统区
+```
+
+隔离靠 **account / user / agent 三层身份**：account 是租户边界，user 是记忆与会话边界，agent 是 agent 级空间边界；检索时会按身份过滤，做到"能搜到的和能读到的保持一致"（[多租户](https://docs.openviking.ai/zh/concepts/11-multi-tenant)）。
+
+`peers/` 是个容易忽略的设计：它是"用户对某个交互对象（仓库、工作区、同事）的记忆"，所以同一个人的记忆会分成"关于用户的"和"关于某个项目的"两套，互不污染。
+
+### 四类上下文
+
+| 类型 | 存什么 | 怎么验证有用 |
+| --- | --- | --- |
+| Resource | 文档、网页、代码等外部资料 | 关键结论能回到来源核对 |
+| Memory | 从会话提取的背景、偏好、经验 | 新会话不用重复交代 |
+| Skill | 工作流指令与配套文件 | Agent 读取后产物符合流程要求 |
+| Rule（Beta） | 特定条件下必须遵守的义务/禁止/例外 | Agent 按任务证据核验并调整行为 |
+
+记忆本身还细分成 11 类内置类型：`profile`、`preferences`、`entities`、`events`、`identity`、`soul`、`cases`、`trajectories`、`experiences`、`tools`、`skills`（[记忆 API](https://docs.openviking.ai/zh/api/16-memory)）。前六类偏"用户是谁"，后五类偏"做过什么、怎么做的"——这个区分决定了检索时的配额分配。
+
+## 核心机制一：L0 / L1 / L2 分层
+
+这是它能省 token 的根，不是玄学：
+
+| 层级 | 名称 | 存储形式 | 默认预算 | 用途 |
+| --- | --- | --- | --- | --- |
+| L0 | 摘要 | 目录内 `.abstract.md` | 256 字符 | 向量检索、快速过滤 |
+| L1 | 概览 | 目录内 `.overview.md` | 4000 字符 | Rerank、内容导航 |
+| L2 | 详情 | 原始文件与子目录 | 无上限 | 按需加载 |
+
+关键点：**L0/L1 是目录级 sidecar，不是每个文件的同名伴生文件。** 文件摘要先作为输入聚合进所在目录的 L1，再由 L1 提取出 L0（取 H1 之后、第一个 `##` 之前的段落）。所以目录结构本身就在参与检索质量——文件乱放，摘要就散（[上下文层级](https://docs.openviking.ai/zh/concepts/03-context-layers)）。
+
+## 核心机制二：两阶段检索
+
+```text
+查询 → 意图分析（0-5 个 TypedQuery） → 层级检索（目录递归） → Rerank → 结果
+```
+
+- **意图分析**只走 `search()`，输入是会话压缩摘要 + 最近 5 条消息 + 当前 query，输出带 `context_type`（memory/resource/skill）与优先级的类型化查询；闲聊类会直接产出 0 个查询，跳过检索。
+- **层级检索**用优先队列递归目录：先全局向量搜索定位起始目录（topk 10），再逐层向下，按 `score_propagation_alpha` 混合父节点与子节点分数，连续 3 轮 topk 不变即收敛。
+- **Rerank** 在 THINKING 模式下对候选统一精排，后端是 `doubao-seed-rerank`；失败会回退到向量分数。
+
+`find()` 与 `search()` 的区别值得单列：
+
+| | `find()` | `search()` |
+| --- | --- | --- |
+| 会话上下文 | 不需要 | 需要 |
+| 意图分析 | 不用 | LLM 分析 |
+| 查询数量 | 单条 | 0–5 条 TypedQuery |
+| 延迟 | 低 | 较高 |
+| 适用 | 简单查询 | 复杂任务 |
+
+（[检索机制](https://docs.openviking.ai/zh/concepts/07-retrieval)）
+
+## 核心机制三：会话提交 → 记忆抽取
+
+写入链路和 RAG 是同一套骨架，只是多了一个"抽取"环节：
+
+```text
+消息 → 归档边界 → 归档（生成 L0/L1） → 记忆提取（MemoryType Schema）
+     → LLM 合并去重 → patch 写回（MemoryUpdater） → RAGFS + 向量索引
+```
+
+抽取由 `SessionCompressorV3` 编排，按记忆类型 Schema 跑 `ExtractLoop`；同一段对话可能产出多条记忆，也可能更新已有记忆。写回是 **patch 语义**，不是覆盖全文——这也是为什么后续纠错要靠删除或显式改写，而不是指望它自己纠正。
+
+召回侧是按类型分桶的：默认 `events=10`、`entities=10`、`preferences=3`、`experiences=0`，再叠加 token 预算（`max_chars / 4`）。编码类插件会把 `score_threshold` 抬到 `0.35`（公共接口默认 `0.1`），避免升级后静默少召回（[记忆 API](https://docs.openviking.ai/zh/api/16-memory)）。
+
+## 接入方式：Hook 插件 vs 纯 MCP
+
+| 接入形态 | 代表宿主 | 模型要不要"记得调用" |
+| --- | --- | --- |
+| hook + MCP 代理 | Claude Code、Codex、TRAE / TRAE CN、Cursor、ZCode、Kimi Code、CodeBuddy、Qoder | 不用，生命周期自动召回与捕获 |
+| 原生插件 | OpenClaw（context-engine）、DSH、pi、Hermes | 不用，但工具面各自实现 |
+| SDK 集成 | LangChain / LangGraph | 按框架抽象接入 |
+| 纯 MCP | 任意兼容客户端（Manus、Claude Desktop 等） | 要，模型主动调工具 |
+
+一张能直接对照的表（摘自[集成能力](https://docs.openviking.ai/zh/agent-integrations/16-capability-reference)）：
+
+| 宿主 | 每次提问前召回 | 会话开场注入 | 会话中提交 | 退出时提交 |
+| --- | --- | --- | --- | --- |
+| Claude Code | 是，带会话 | profile + 记忆索引 + skill | 待提交 20,000 token | 是 |
+| TRAE / TRAE CN | 是，带会话 | 同上 | **每轮** | 无退出事件，每轮已提交 |
+| Cursor | 是，带会话 | 同上 | 每 8 条消息 | 否 |
+| Codex | 是，带会话 | 同上 | 待提交 20,000 token | 版本相关 |
+
+TRAE 的"每轮提交"是个双刃：记忆新鲜度高，代价是每一轮都要走一次抽取，隐私与成本都前置。
+
+服务端 MCP 工具是**服务端定义、客户端只转发**，插件不发版也能拿到新工具。当前分组大致是：检索浏览（`find` / `search` / `read` / `list` / `tree` / `grep` / `glob` / `rule_search` / `download`）、写入（`remember` / `write` / `edit` / `add_resource` / `add_skill`）、删除（`forget`）、权限（`list_users` / `list_groups` / `get_acl` / `set_acl`）、状态（`health`），外加 watch 相关工具。
+
+## 本地实态
+
+以下是我这台机器（Trae CN + 火山引擎托管服务）2026-11-20 的实测，不是文档抄写：
+
+| 项 | 实测值 |
+| --- | --- |
+| CLI | `ov` v0.5.3（npm 全局安装） |
+| 服务端 | v0.5.2.13，云端 `api.vikingdb.cn-beijing.volces.com/openviking`，身份 `default/default`，角色 admin |
+| 接入插件 | `agent-hook-plugin` 0.5.34，装在 `~/.openviking/agent-integrations/trae-cn` |
+| Hook 事件 | `SessionStart` / `UserPromptSubmit` / `PreToolUse`（URI 守卫）/ `Stop`，共四条 |
+| MCP 工具 | 22 个（`find`、`search`、`read`、`remember`、`forget`、`tree`、`grep`、`privacy_*`、`health` 等） |
+| 记忆分区 | `memories/{cases,entities,events,experiences,preferences,trajectories}` + `identity.md` / `profile.md` / `soul.md`，合计 123 个条目 |
+| Peer 分区 | 按工作区/仓库身份隔离，本机三个：WFAgent 安卓项目、wb-proxy、yindesk 博客 |
+
+本地目录只有**缓存与状态**，没有记忆正文：`~/.openviking/hook-state/<host>/<session>.json` 存会话水位和上轮注入的 recall 块，`~/.openviking/state/ws-identity-*.json` 存工作区身份映射。记忆本体全在远端——所以删本地文件和删记忆是两件事，别指望互相同步。
+
+几个实操坑：
+
+- `ov` 首次运行强制要求选显示语言（`ov language zh-CN`），否则所有命令都会报错退出。
+- `ov` 要写 `~/.openviking`，在受限沙箱里跑会报 IO 错误，需要放行或者直接跑非沙箱命令。
+- `PreToolUse` 的 URI 守卫会拦截"用 shell 读 `viking://`"这类误用，但带 `viking://` 参数的 `ov` 命令是正常放行的。
+
+清理与纠错的最小路径：
+
+```bash
+ov find "关键词" -u viking://user/default/memories -L 0,1,2   # 先定位
+ov grep "关键词" -u viking://user/default/memories -i          # 精确匹配
+ov rm viking://user/default/memories/entities/xxx.md          # 单条
+ov rm -r viking://user/default/memories/cases --wait           # 整棵子树
+```
+
+索引刷新是异步的，删完立刻 `find` 可能还命中，加 `--wait` 或稍等再验。等价的 MCP 调用是 `forget(uri, recursive)`。
+
+## 效果数据（全部为官方自评）
+
+LoCoMo 长期记忆，把三个 Agent 分别接到 OpenViking 上（[官方基准博客，2026-05-29](https://blog.openviking.ai/post/openviking-benchmark-results/)）：
+
+| 集成 | 原生准确率 | 接 OpenViking 后 | 时延变化 | Token 变化 |
+| --- | --- | --- | --- | --- |
+| OpenClaw | 24.20% | 82.08% | −59.22% | −91.0% |
+| Hermes | 33.38% | 82.86% | −66.10% | −34.3% |
+| Claude Code | 57.21% | 80.32% | −58.45% | −63.2% |
+
+另外三组：
+
+| 场景 | 指标 |
+| --- | --- |
+| ClawWork（agent 经验记忆） | 净收入 +69.34%，每小时 token −22.8% |
+| tau2-bench（加经验记忆） | 零售 +6.87pp、航空 +11.87pp |
+| HotpotQA（top-20 检索） | 91.00%，0.23s |
+| 单轮 RAG 五数据集均值 | 66.87%，0.19s，索引成本 8.67M token（LightRAG 的约 13.8%） |
+
+口径要看清：HotpotQA 的 91% 是"检索 top-20 全塞进去"换来的，每问 12,533 token；单轮 RAG 均值 66.87% 反而低于 LightRAG 的 76%。也就是说它的强项是**长期记忆与多轮上下文**，不是"任何 RAG 都更强"。论文侧对应的是 VikingMem（已中 VLDB 2026，[arXiv](https://arxiv.org/abs/2605.29640)）。
+
+## 和常见做法比，差在哪
+
+不逐个点名产品比参数（各家口径不同、我也没复现），只比架构取向：
+
+| 维度 | 传统向量库 RAG | 宿主内置记忆 | OpenViking |
+| --- | --- | --- | --- |
+| 组织单位 | 切块（chunk） | 文件或键值 | 目录 + 文件（`viking://`） |
+| 索引对象 | 块向量 | 通常无层级 | 目录摘要 L0/L1 + 块向量 |
+| 上下文装载 | 全量注入 top-k | 全量注入 | 渐进式，按需下钻到 L2 |
+| 来源边界 | 只有资料 | 只有对话 | Resource / Memory / Skill 同一套寻址 |
+| 记忆更新 | 手工 upsert | 摘要式覆写 | 抽取 + merge + patch |
+
+它真正解决的是"**上下文该放哪、该拿多少**"这个问题；纯向量库解决的是"**怎么找到相似块**"。两者不是替代关系，OpenViking 内部也用了向量检索。
+
+## 适用与不适用
+
+适合：
+
+- 长周期、跨会话的工作（一个人 + 多个仓库、多个项目并行），需要"上次聊到哪"。
+- 资料、记忆、技能混杂，需要一个统一寻址面而不是三套系统。
+- 想给现有 Agent 加记忆，又不想改它的主循环——hook 插件是现成的。
+
+不适合：
+
+- 单轮问答、短任务：抽取与召回的成本高于收益。
+- 强合规场景直接上云服务：TRAE 这类宿主是**每轮提交**，对话内容（可能含代码、密钥、客户信息）会进远端，得先确认数据出境与留存策略。
+- 期待"记忆自动正确"：抽取是 LLM 做的，错记和漏记都会发生，纠错链路目前是手工 `forget` / `edit`。
+
+落到我自己的用法上：Android 客户端 + RAG 调优这种"同一件事反复迭代"的场景收益明显；而"查一个 API 怎么用"这种一次性问题，多一层检索只会更慢。
+
+## 风险与待核实
+
+- **数据边界**：托管服务的数据留存、加密与删除策略以[服务说明](https://www.volcengine.com/docs/84313/2374478?lang=zh)为准；本地实测只能看到"每轮上传"这个行为，看不到服务端留存周期。
+- **AGPLv3**：自建服务端走 AGPL，对外提供服务需评估开源义务；企业私有化是另一套 License。
+- **成熟度**：0.5.x，1,558 个 open issue，接口有废弃动作（`/api/v1/search/recall` 已标记 Deprecation，迁到 `search(mode="context")`）。
+- **工具数量口径不一**：能力对照页写服务端 22 个 MCP 工具，较旧的 [MCP 集成指南](https://docs.openviking.ai/zh/guides/06-mcp-integration) 写 9 个；本机实测 22 个，以实测为准。
+- **基准全部为官方自评**：LoCoMo / tau2 / HotpotQA 均为官方博客口径，没有找到第三方复现；官网首页的"63% token 下降"对应 Claude Code 那一行，别当成通用值。
+- **"自迭代"（self-evolving）**：目前可核实的载体是 Skill 编译与 Rule（Beta），没有看到"记忆自动重写自身策略"的可验证实现，宣传语与文档能力之间要留余量。
+
+## 参考来源
+
+- [官网](https://openviking.ai/) · [文档首页](https://docs.openviking.ai/zh/getting-started/01-introduction) · [快速开始](https://docs.openviking.ai/zh/getting-started/02-quickstart) · [部署模式](https://docs.openviking.ai/zh/getting-started/07-options) · [记忆使用](https://docs.openviking.ai/zh/getting-started/09-memory)
+- [架构概述](https://docs.openviking.ai/zh/concepts/01-architecture) · [上下文层级 L0/L1/L2](https://docs.openviking.ai/zh/concepts/03-context-layers) · [检索机制](https://docs.openviking.ai/zh/concepts/07-retrieval) · [多租户](https://docs.openviking.ai/zh/concepts/11-multi-tenant)
+- [记忆 API 与内置类型](https://docs.openviking.ai/zh/api/16-memory) · [Agent 集成概览](https://docs.openviking.ai/zh/agent-integrations/01-overview) · [集成能力对照](https://docs.openviking.ai/zh/agent-integrations/16-capability-reference) · [MCP 集成指南](https://docs.openviking.ai/zh/guides/06-mcp-integration)
+- [GitHub 仓库](https://github.com/volcengine/OpenViking) · [GitHub API 统计](https://api.github.com/repos/volcengine/OpenViking)
+- [官方基准博客](https://blog.openviking.ai/post/openviking-benchmark-results/) · [Coding 场景页](https://www.openviking.ai/solutions/coding) · [VikingMem 论文](https://arxiv.org/abs/2605.29640)
+- [火山引擎：OpenViking Service 产品介绍](https://www.volcengine.com/docs/84313/2374478?lang=zh) · [火山方舟：Agent 记忆](https://www.volcengine.com/docs/82379/2545595?lang=zh)
