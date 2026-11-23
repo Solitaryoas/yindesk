@@ -1,20 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-
-export type NoteItem = {
-  url: string;
-  title: string;
-  description: string;
-  topics: string[];
-  /** 最后更新时间，ISO 字符串 */
-  date?: string;
-};
+import { useState } from "react";
+import { ALL_TOPICS, getNoteTopics, type NoteItem } from "@/lib/notes-shared";
 
 type View = "topic" | "time";
-
-const ALL_TOPICS = "全部";
 
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   timeZone: "Asia/Shanghai",
@@ -47,17 +37,7 @@ export function NotesFilter({ items }: { items: NoteItem[] }) {
   const [activeTopic, setActiveTopic] = useState(ALL_TOPICS);
 
   // 主题按文章数从多到少排，数量相同的按名称排
-  const topics = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of items) {
-      for (const topic of item.topics) {
-        counts.set(topic, (counts.get(topic) ?? 0) + 1);
-      }
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh-CN"))
-      .map(([topic]) => topic);
-  }, [items]);
+  const topics = getNoteTopics(items);
 
   const visibleItems =
     view === "topic" && activeTopic !== ALL_TOPICS
