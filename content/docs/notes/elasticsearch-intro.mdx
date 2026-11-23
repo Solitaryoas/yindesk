@@ -1,0 +1,210 @@
+---
+title: Elasticsearch 入门与实现原理
+description: 从 Lucene、倒排索引、段与 translog 到 BM25 打分，补齐 ES 入门材料里略过的实现原理
+topics: [后端, RAG]
+---
+
+> 参考：CSDN《ElasticSearch篇——初始、认识、拿下ElasticSearch》（2023-12-09，作者 Be explorer）
+> [blog.csdn.net/CNpeaceful/article/details/134894253](https://blog.csdn.net/CNpeaceful/article/details/134894253)
+>
+> 本文按原文脉络整理，并做了三件事：补上原文略过的内部机制（段、refresh、translog、BM25），按当前 8.x/9.x 版本修正过时结论，最后对回本项目的实际配置。
+
+## 1. 为什么需要 Elasticsearch
+
+原文的出发点是「模糊查询撑不住大数据量」，这个判断是对的，原因在索引结构：
+
+- `SELECT * FROM t WHERE name LIKE '%净水%'` 这种左模糊匹配，B+ 树索引完全用不上，只能全表扫描。
+- 数据到百万、千万级后，单次查询延迟会到秒级甚至更久，且无法承受并发。
+- 业务要的不只是「包含某个字」，还有分词（「超滤膜的清洗」要能匹配「超滤」「清洗」）、相关度排序、高亮、聚合统计。
+
+于是需要一种专为「文本检索」设计的存储：预先按词建立索引，查询时不再扫原文。
+
+## 2. Lucene 与 Elasticsearch 的关系
+
+| 层 | 是什么 | 负责什么 |
+|---|---|---|
+| Lucene | 一个 Java 检索工具包（jar） | 倒排索引结构、分词后的索引读写、排序与打分规则 |
+| Elasticsearch | 基于 Lucene 的分布式封装 | 分片与副本、集群管理、RESTful API、聚合、高可用 |
+
+一句话：**Lucene 是引擎，ES 是整车**。原文这个比喻（Lucene 不含搜索引擎，只提供检索能力）是准确的。ES 的价值在于用 HTTP + JSON 隐藏了 Lucene 的复杂度，同时把单机索引扩展成集群。
+
+## 3. ES 是什么
+
+- 开源的分布式全文检索引擎，Java 开发，内核是 Lucene；
+- 通过 RESTful API 交互，请求与响应都是 JSON；
+- **近实时**（NRT）：写入后默认约 1 秒可被搜索；
+- 水平扩展：加节点即可扩容，可管理 PB 级数据；
+- 典型角色：站内搜索、日志分析（ELK）、以及近年的 RAG 词面召回。
+
+## 4. ES 与 Solr 对比
+
+原文的对比结论基本成立，整理成表：
+
+| 维度 | Elasticsearch | Solr |
+|---|---|---|
+| API 风格 | RESTful + JSON | Web-Service，配置常用 XML |
+| 分布式协调 | 自身带协调组件 | 依赖 ZooKeeper |
+| 数据格式 | 只接受 JSON | JSON / XML / CSV 等 |
+| 可视化 | 需配合 Kibana | 自带管理界面 |
+| 写入性能 | 快（近实时） | 相对慢，批量更新代价高 |
+| 查询性能 | 好 | 好，复杂查询场景成熟 |
+| 典型场景 | 实时搜索、日志分析 | 传统企业搜索、电商检索 |
+
+需要注意原文这句「ES 查询快更新慢、Solr 查询快但更新慢」表述有点绕，实际差异主要在**写入与近实时能力**：ES 的段式写入 + translog 让写入吞吐和可见性都更好；Solr 在超复杂查询与丰富格式支持上更成熟。
+
+## 5. 核心概念
+
+### 5.1 与关系型数据库的对应
+
+| 关系型数据库 | Elasticsearch | 说明 |
+|---|---|---|
+| Database | Index（索引） | 一类文档的集合，有自己的 mapping 和分片设置 |
+| Table | Type（类型） | **7.x 起仅保留 `_doc`，8.x 已完全移除**，现在应理解为「一个索引一套 mapping」 |
+| Row | Document（文档） | 一条 JSON 记录 |
+| Column | Field（字段） | JSON 里的键，类型由 mapping 定义 |
+| Schema | Mapping | 字段类型、分词器、是否索引等 |
+| — | Shard（分片） | 索引的物理切分，每个分片是一个独立 Lucene 索引 |
+
+原文「一切都是 JSON」这个说法对理解 ES 很有效：文档、查询、响应、设置全是 JSON。
+
+### 5.2 物理设计：节点、主分片、副本
+
+- **节点**：一个 ES 进程；单机启动就是一个节点的集群，默认集群名 `elasticsearch`。
+- **主分片（primary shard）**：索引写入时就切分成 N 份，每份是一个 Lucene 索引目录。文档按 `hash(_routing 或 _id) % N` 落到某个主分片。
+- **副本分片（replica shard）**：主分片的拷贝，提供读扩展与故障转移。**副本不会和它的主分片落在同一节点**，这正是原文强调的那点。
+- **分片数创建后不能原地修改**，扩容要走 reindex 或 split/shrink，所以建索引前要预估数据量。
+
+> **勘误**：原文写「创建索引默认 5 个分片 + 每个主分片 1 个副本」，这是 6.x 及更早版本的行为。**7.0 起默认改为 1 个主分片 + 1 个副本**，因为小索引分太多片反而增加开销。本项目单机、数据量小，默认 1 分片即可。
+
+### 5.3 写入为什么是「近实时」
+
+原文只说了「近乎实时」，没展开机制，这里补上，因为后面调优要用：
+
+1. 文档到达主分片后，先写入**内存缓冲**，同时追加 **translog**（预写日志，默认每次请求 fsync）。
+2. 默认每 1 秒执行一次 **refresh**：把缓冲里的文档构建成一个**新的 segment** 并打开搜索器，此时文档才能被搜到。这就是 NRT 的来源。
+3. **flush** 把内存段提交到磁盘（写 commit point、清空 translog），默认在 translog 达到 512MB 或 30 分钟时触发。
+4. 后台 **merge** 把多个小 segment 合并成大段，同时才真正物理删除已标记删除的文档。
+
+由此得到两条工程结论：
+
+- **refresh ≠ 落盘**。数据安全靠 translog；refresh 只决定「多久能被搜到」。
+- **段越多，查询越慢**（每个段都要查一遍）。批量导入时应调大 `refresh_interval`、改用 `_bulk`，而不是逐条写。
+
+## 6. 倒排索引
+
+原文用「文档 → 分词 → 词项列表 → 包含该词的文档」来解释，这是核心。展开一下：
+
+假设两个文档：
+
+| 文档 | 内容 |
+|---|---|
+| 1 | the quick brown fox |
+| 2 | the quick dog |
+
+建索引时先分词去重，得到「词项 → 文档列表（含词频、位置）」的结构：
+
+| 词项 | 文档 1 | 文档 2 |
+|---|---|---|
+| the | ✓ | ✓ |
+| quick | ✓ | ✓ |
+| brown | ✓ | |
+| fox | ✓ | |
+| dog | | ✓ |
+
+搜索 `quick fox` 时：
+
+1. 先在该结构里定位 `quick` 和 `fox` 两个词项；
+2. 取各自的文档列表求交集，得到文档 1；
+3. 按词频、文档长度等计算相关度分数排序。
+
+**为什么快**：不需要读原文，只需要「词项 → 文档列表」的映射；词典通常用 FST 常驻内存，文档列表用跳跃表加速求交。原文说的「total 就是权重」，对应的就是打分环节。
+
+倒排索引的代价在写入：新增文档要分词、更新词典、追加文档列表，还要处理段合并。这也是 ES 写入比查询「重」的根本原因。
+
+## 7. 打分：BM25
+
+原文没有展开打分，但这是理解排序的关键。ES 默认 BM25：
+
+```text
+score = Σ IDF(词) × [ tf·(k1+1) / (tf + k1·(1 − b + b·dl/avgdl)) ]
+k1 = 1.2    b = 0.75
+```
+
+三个可感知的性质：
+
+- **词频饱和**：某个词出现 10 次不会拿到 3 次的 3 倍分，堆砌关键词收益递减。
+- **长度归一化**（`dl/avgdl`）：词频相同时，短文档得分更高。这就是短文档容易靠标题命中排到长文档前面的原因。
+- **字段权重**：`multi_match` 的 `best_fields` 只取单字段最高分，不跨字段累加，所以 `title^4` 一旦命中基本就定了排序。
+
+## 8. ELK / Elastic Stack
+
+原文对 ELK 的介绍是准确的：
+
+| 组件 | 作用 |
+|---|---|
+| Elasticsearch | 存储与检索 |
+| Logstash | 数据采集、解析、过滤、输出 |
+| Kibana | 可视化、查询控制台（Dev Tools）、仪表盘 |
+| Beats（后加入） | 轻量采集器，部署在数据源侧 |
+
+ELK 最出名的是日志分析，但它本质是「采集 → 存储 → 分析」的通用栈，任何需要检索与分析的数据都能用。
+
+## 9. 安装与实践
+
+原文的路径是「官方压缩包 + elasticsearch-head + Kibana」，步骤可用，但有几处值得更新：
+
+| 原文做法 | 现在更推荐 |
+|---|---|
+| 本机解压启动 `elasticsearch.bat` | Docker / Docker Compose 启动，环境一致、易回滚 |
+| elasticsearch-head + 9100 端口 + 手工开 CORS | Kibana Dev Tools，或直接用 curl / 脚本调 REST API |
+| JDK 1.8 | ES 8.x 起自带 JDK，不再依赖宿主机 JDK |
+| 版本一致性（ES / Kibana / 客户端） | 仍然成立，且更严格：大版本必须一致 |
+
+原文中两个仍然有效的坑：
+
+1. **CORS 配置拼写错误会导致 ES 启动闪退**，改 `elasticsearch.yml` 后要看日志确认启动成功。
+2. **客户端依赖版本必须与 ES 大版本一致**，否则可能出现兼容性问题。
+
+本项目的实际做法：
+
+- 用 Docker Compose 起 ES（`water_plant/elasticsearch-ik:9.4.4`，自建镜像因为官方镜像不带 IK 分词插件）；
+- 端口 `127.0.0.1:9200`，数据落命名卷；
+- 不用 head，直接用脚本调 REST API 做索引管理。
+
+> **IK 分词插件是中文场景的必需项**。官方镜像默认没有中文分词器，会报 `failed to find tokenizer under name [ik_max_word]`，需要在镜像里预装 `analysis-ik`。
+
+## 10. 在本项目中的用法
+
+本项目把 ES 当作 RAG 的**词面召回通道**，与 Qdrant 的语义召回并行：
+
+| 项 | 配置 |
+|---|---|
+| 索引 | `water_plant_rag_chunks`，115 文档 / 458 块 |
+| 分词 | 索引时 `ik_max_word`（细粒度，提高召回），查询时 `ik_smart`（粗粒度，降低噪声） |
+| 检索 | `multi_match` + `best_fields`，字段权重 `title^1.5`、`heading_path^2`、`identifiers^3`、`source_locator^2`、`content`、`normalized_content` |
+| 过滤 | `filter`：`status=active` + ACL（走 bitset、不打分、可缓存） |
+| 软加权 | `should`：工艺域 / 异常类型（打标覆盖率低，硬过滤会丢文档） |
+| 写入 | 逐条 upsert 并带 `refresh` 参数，保证写完即可见 |
+| 删除 | `_delete_by_query` + `conflicts=proceed` |
+
+两处与原文对照值得记下来的经验：
+
+- 原文说 ES「适合搜索」，在本项目里体现为：ES 只负责「这个词出现在哪些块」，语义相似但用词不同的块由 Qdrant 补，两路结果再用 RRF 融合。**ES 的 `_score` 不参与最终排序**，只贡献排名。
+- `title^1.5` 这个值不是拍脑袋定的：标题权重过高时，一百多字的短文档会靠标题命中压过上千字的完整辨析文档，MRR 明显下降；把 `title` 从 4 降到 1.5、`heading_path` 从 3 降到 2 后，MRR 从 0.9575 升到 0.9825。这正好印证了第 7 节的长度归一化与字段权重机制。
+
+## 11. 小结
+
+| 问题 | 答案 |
+|---|---|
+| ES 和 Lucene 什么关系 | Lucene 是检索引擎库，ES 是它的分布式封装 |
+| 为什么快 | 倒排索引 + 不可变段 + filter 缓存 |
+| 为什么是近实时 | refresh 默认 1 秒生成可搜索的新段 |
+| 数据为什么不丢 | translog 预写日志 + flush 提交 |
+| 排序为什么那样 | BM25：词频饱和 + 长度归一化 + 字段权重 |
+| 什么时候别用它 | 需要事务、强一致、复杂关联查询时，用关系型数据库 |
+
+## 参考
+
+- 原文：[CSDN 原帖](https://blog.csdn.net/CNpeaceful/article/details/134894253)
+- Elastic 官方文档：[elastic.co/guide](https://www.elastic.co/guide/index.html)
+- BM25 与相似度：[Similarity module](https://www.elastic.co/guide/en/elasticsearch/reference/current/index-modules-similarity.html)
