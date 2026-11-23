@@ -18,6 +18,7 @@
     "openviking",
     "elasticsearch-intro",
     "elasticsearch-rag",
-    "rag-pipeline"
+    "rag-pipeline",
+    "rag-alternatives"
   ]
 }
