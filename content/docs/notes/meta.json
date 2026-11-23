@@ -16,6 +16,7 @@
     "agent-harness",
     "context-rot",
     "openviking",
-    "elasticsearch-rag"
+    "elasticsearch-rag",
+    "rag-pipeline"
   ]
 }
