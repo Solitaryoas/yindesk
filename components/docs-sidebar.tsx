@@ -18,11 +18,13 @@ const NOTES_PATH_PREFIX = "/docs/notes";
 function filterNotesTree(
   tree: PageTree.Root,
   notes: NoteItem[],
+  pathname: string,
   view: View,
   topic: string,
 ): PageTree.Root {
   if (view === "topic" && topic === ALL_TOPICS) return tree;
 
+  const currentUrl = pathname.replace(/\/$/, "");
   const byUrl = new Map(notes.map((note) => [note.url, note]));
   const isNoteItem = (node: PageTree.Node): node is PageTree.Item =>
     node.type === "page" && byUrl.has(node.url);
@@ -38,7 +40,11 @@ function filterNotesTree(
     let noteItems = mapped.filter(isNoteItem);
 
     if (view === "topic") {
-      noteItems = noteItems.filter((item) => byUrl.get(item.url)!.topics.includes(topic));
+      // 当前页必须保留：否则 fumadocs 的 searchPath 找不到路径，
+      // 会把侧边栏根节点回退成整棵树，导致列表塌缩成顶层目录
+      noteItems = noteItems.filter(
+        (item) => item.url === currentUrl || byUrl.get(item.url)!.topics.includes(topic),
+      );
     } else {
       noteItems = [...noteItems].sort((a, b) =>
         (byUrl.get(b.url)?.date ?? "").localeCompare(byUrl.get(a.url)?.date ?? ""),
@@ -49,10 +55,12 @@ function filterNotesTree(
   };
 
   // fumadocs 的 TreeContext 只按根节点的 $id 做 memo，
-  // 这里换一个随筛选条件变化的 id，过滤/重排后的树才会真正生效
+  // 这里换一个随筛选条件变化的 id，过滤/重排后的树才会真正生效；
+  // 主题模式下的结果还依赖当前页，所以把 currentUrl 也纳入 id
+  const idSuffix = view === "topic" ? `:${currentUrl}` : "";
   return {
     ...tree,
-    $id: `${tree.$id ?? "notes"}:${view}:${topic}`,
+    $id: `${tree.$id ?? "notes"}:${view}:${topic}${idSuffix}`,
     children: transform(tree.children),
   };
 }
@@ -146,8 +154,8 @@ export function DocsShell({
   const effectiveTopic = onNotes ? topic : ALL_TOPICS;
 
   const filteredTree = useMemo(
-    () => filterNotesTree(tree, notes, effectiveView, effectiveTopic),
-    [tree, notes, effectiveView, effectiveTopic],
+    () => filterNotesTree(tree, notes, pathname, effectiveView, effectiveTopic),
+    [tree, notes, pathname, effectiveView, effectiveTopic],
   );
   const topics = useMemo(() => getNoteTopics(notes), [notes]);
 
