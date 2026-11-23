@@ -1,0 +1,277 @@
+---
+title: RAG 里的 Elasticsearch：BM25、混合检索与向量库分工
+description: 从倒排索引、IK 分词、BM25 调参到 RRF 融合，讲清 ES 在 RAG 检索链路里该干什么、不该干什么
+---
+
+先说结论：**在 RAG 里，ES 不是"向量库的廉价替代"，而是词法召回的底座。** 它的不可替代性是"专有名词、型号、编号、条款号"这类精确匹配，以及元数据过滤、聚合和高亮；语义泛化交给向量库，精排交给 rerank。三者是互补关系，不是替代关系。
+
+一句话记法：**ES 管"字面像不像"，向量库管"意思近不近"，rerank 管"到底对不对"。**
+
+## 一、检索链路里的三个位置
+
+| 环节 | 实现 | 强项 | 弱项 |
+| --- | --- | --- | --- |
+| 词法召回 | ES + BM25 | 精确词、稀有词、可解释、无需 GPU | 改述和同义词失效 |
+| 语义召回 | Qdrant / Milvus / ES kNN | 改述、跨语言、长尾表达 | 对编号、否定词不敏感，分数不可比 |
+| 精排 | Cross-encoder rerank | 相关性判断最准 | 只能跑 topN，成本高 |
+
+RAG 的典型错误是"只留向量检索"：用户问"TDS-480 的报警阈值"，向量模型会把 480 当成普通数字，而 BM25 能靠 term 命中直接把它捞出来。反过来，只留 BM25 也不行——用户换个说法（"水质超标怎么办" vs "参数越限处置流程"）就召不回了。
+
+## 二、ES 的检索底座：倒排索引与文本分析
+
+### 倒排索引
+
+文本写入 ES 时经过分析器切成 term，建立 `term → posting list(doc_id, tf, position)` 的映射。查询时同样切词，再去 term dictionary 里找。真正影响 BM25 的是三份额外数据：
+
+| 结构 | 作用 |
+| --- | --- |
+| postings | 记录文档与词频，算 tf |
+| norms | 记录字段长度，算长度归一 |
+| doc_values | 列式存储，供排序、聚合、过滤 |
+
+`norms` 是很多人忽略的点：**字段越长，单个词命中的权重越低**。所以 RAG 里把整篇文档塞进一个 `text` 字段，效果一定差于按标题/小节切块后分别索引。
+
+### 分析器三段式
+
+```text
+char_filter → tokenizer → token_filter
+（清洗）      （切词）      （小写、同义词、停用词、词干）
+```
+
+中文场景的分工要固定下来：
+
+| 阶段 | 分析器 | 说明 |
+| --- | --- | --- |
+| 索引 | `ik_max_word` | 细粒度，尽量多切，提高召回 |
+| 查询 | `ik_smart` | 粗粒度，减少噪声 |
+
+**索引和查询分析器不一致，是最常见的"查不到"原因**：索引时切成了"水质/治理"，查询时按整词"水质治理"去匹配，倒排表里根本没有这个 term。同义词、业务词典（水厂设备名、化学式缩写）应加到 IK 的 `custom` 词典并支持热更新，而不是靠每次查询时拼 `synonyms`。
+
+### 多字段而不是大字段
+
+RAG 的 chunk 通常带层级信息，建议拆成三个字段：
+
+```json
+{
+  "mappings": {
+    "properties": {
+      "title":    { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "heading":  { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "content":  { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "chunk_id": { "type": "keyword" },
+      "doc_id":   { "type": "keyword" },
+      "version":  { "type": "keyword" }
+    }
+  }
+}
+```
+
+拆字段的好处是**权重可以分开调**，而且标题这种短字段不会被正文长度稀释。
+
+## 三、BM25 到底在算什么
+
+```text
+score(q, d) = Σ IDF(qi) · [ tf · (k1 + 1) ] / [ tf + k1 · (1 - b + b · dl / avgdl) ]
+```
+
+| 参数 | 默认 | 作用 | 调它的直觉 |
+| --- | --- | --- | --- |
+| `k1` | 1.2 | 词频饱和速度 | 越小越快饱和，长文档里重复词不再加分 |
+| `b` | 0.75 | 长度归一强度 | 0 关闭长度惩罚，1 完全按长度归一 |
+
+一般语料不需要动 `k1` / `b`。RAG 里更有效的杠杆是 **field boost**：
+
+```json
+{
+  "query": {
+    "multi_match": {
+      "query": "膜元件破损",
+      "fields": ["title^1.5", "heading^2", "content"],
+      "type": "best_fields"
+    }
+  }
+}
+```
+
+boost 是查询期的乘法，不改索引，可以随时调。`explain: true` 能看到每个字段的贡献分解，比拍脑袋加数靠谱。
+
+### 一次真实的调参记录
+
+在 wiki 语料上把 title / heading 的 boost 从 `4 / 3` 逐步下调，固定评测集的结果：
+
+| title / heading | MRR | NDCG | precision | recall |
+| --- | --- | --- | --- | --- |
+| 4 / 3（原） | 0.9575 | 0.9050 | 0.425 | 0.9392 |
+| 2.5 / 2.5 | 0.9625 | 0.9085 | 0.427 | 0.9392 |
+| 2 / 2 | 0.9775 | 0.9154 | 0.428 | 0.9392 |
+| **1.5 / 2（采用）** | **0.9825** | **0.9192** | **0.431** | **0.9392** |
+| 1 / 1.5 | 0.9400 | 0.9001 | 0.425 | 0.9358 |
+
+两个结论：
+
+1. **权重过高会挤掉正文命中的正确 chunk**。标题短、词集中，boost 一大，排序全被标题匹配主导。
+2. **收益有拐点**。到 `1.5 / 2` 时 MRR、NDCG、precision 都在涨且 recall 不掉；再往下压 recall 开始掉，说明已经开始牺牲召回。调参不是越低越好，是找到"指标还在涨的最后一步"。
+
+## 四、混合检索：RRF 还是加权
+
+两路召回合并，主流两种做法：
+
+### RRF（倒数排序融合）
+
+```text
+score(d) = Σ 1 / (k + rank_i(d))     # k 默认 60
+```
+
+只用排名，不用原始分数，天然规避"BM25 分数和余弦相似度量纲不同"的问题，几乎不用调参，是官方推荐的起点。代价是丢掉分数幅度信息——一路以极大优势排第一的文档，和险胜排第一的文档，得分一样。
+
+### 线性加权
+
+```text
+score = α · norm(bm25) + (1 - α) · norm(vector)
+```
+
+需要先做 min-max 或 z-score 归一，`α` 要调。好处是能保留分数强度，适合业务上明确知道"精确匹配优先"的场景。
+
+### ES 内的融合能力
+
+- 8.8 起提供 `retriever` + `rrf`，可以在一次请求里组合 `standard`（BM25）和 `knn`：
+
+```json
+{
+  "retriever": {
+    "rrf": {
+      "retrievers": [
+        { "standard": { "query": { "match": { "content": "膜元件破损" } } } },
+        { "knn": { "field": "embedding", "query_vector": [0.1, 0.2], "k": 50, "num_candidates": 200 } }
+      ],
+      "rank_constant": 60
+    }
+  }
+}
+```
+
+- 9.2 起 ES|QL 支持 `FORK` 多路检索 + RRF / 线性组合（[Search Labs](https://www.elastic.co/search-labs/de/blog/hybrid-search-multi-stage-retrieval-esql)）。
+- 9.x 还在往向量库方向走：9.5 引入 VectorDB index mode 和向量自动校准，说明"一个引擎同时做词法和向量"是官方押注的方向。
+
+**融合放在哪，取决于你的架构**：两路都在 ES 内，用原生 retriever 最省事；一路在 Qdrant、一路在 ES，就得在应用层融合（或者把向量也搬进 ES）。
+
+## 五、和 Qdrant 的分工
+
+ES + Qdrant 双写是常见架构，职责要划清楚：
+
+| 维度 | ES | Qdrant |
+| --- | --- | --- |
+| 召回方式 | BM25 + 过滤 + 聚合 + 高亮 | 稠密/稀疏向量近邻 |
+| 擅长查询 | 型号、编号、条款、精确短语 | 改述、语义相近、跨语言 |
+| 典型参数 | boost、analyzer、`minimum_should_match` | HNSW `m` / `ef_construct`、`hnsw_ef` |
+| 运维成本 | 高（JVM、分片、段合并） | 低（单二进制） |
+
+分工要点：
+
+1. **同一份 chunk_id 贯穿两库**，融合和去重都靠它，不要用自增 id 各存一套。
+2. **两库版本号必须同步**（如 `v3`），重建时先建新索引再切别名，不要就地覆盖。
+3. **写入幂等**：以 `chunk_id` 为 `_id` 做 upsert，重复跑索引不会产生脏数据。
+4. **条数校验**：重建后比对两库 count 和抽样内容，防止一边成功一边失败（真实踩过：ES 落了 510 条，Qdrant 已是 378 条，两边对不上）。
+5. **融合时的 topK 要一致**：ES 取 50、Qdrant 取 10，RRF 会系统性偏向 ES 那一路。
+
+什么时候可以只用 ES：语料在千万级以内、已有 ES 集群、不想多维护一套服务。什么时候保留 Qdrant：向量规模大、需要多向量/量化/复杂过滤、或者团队已有 Qdrant 运维经验。
+
+## 六、索引工程要点
+
+| 项 | 建议 |
+| --- | --- |
+| mapping | 显式定义，`dynamic: "strict"`，避免字段被自动映射成错误类型 |
+| 分片 | 单分片 10–50GB 经验值；RAG 语料常见 1 主 1 副足够，分片过多反而增加开销 |
+| refresh | 写入期设 `30s` 或 `-1`，写完再 `_forcemerge`，别用默认 1s 压段合并 |
+| bulk | 单批 5–15MB，并发 2–4 路，失败项要重试 |
+| 索引切换 | 版本化索引名 + 别名原子切换，回滚只改别名 |
+| 存储 | 正文可以只存 chunk 摘要或指针，原始文本放对象存储，避免索引膨胀 |
+| 插件 | IK 等分词插件要固定镜像版本；自建镜像里缺插件会导致建索引直接失败 |
+
+## 七、调优优先级
+
+按投入产出排序，越靠前收益越大：
+
+1. **切块与字段结构**：标题层级是否保留、chunk 是否过大、有没有把无关章节混在一起
+2. **分词与词典**：IK 词典是否覆盖业务术语、索引/查询分析器是否一致
+3. **字段权重**：title / heading / content 的 boost，用评测集找拐点
+4. **BM25 参数**：`k1` / `b`，一般最后动
+5. **融合方式**：RRF 起步，有明确业务偏好再上线性加权
+6. **rerank**：只对融合后的 topN 做，模型选择和延迟预算要一起看
+
+## 八、评估：别只看 top1
+
+固定一套评测集（query → 期望 chunk_id），每次只改一个变量：
+
+| 指标 | 看什么 |
+| --- | --- |
+| Recall@K | 正确 chunk 有没有进候选集，召回阶段的核心 |
+| MRR | 第一个正确结果排多前 |
+| NDCG@K | 多个相关结果的排序质量 |
+| Precision@K | 候选里噪声有多少 |
+
+只盯 top1 会过拟合：boost 调到极端时 top1 可能变好，但候选集已经烂了，最终答案质量反而下降。**recall 不掉，才说明调参没有牺牲召回。**
+
+## 九、常见坑
+
+- 索引和查询用不同分析器 → 倒排表里根本没有查询 term，召回为 0
+- 把整篇文档塞进一个字段 → norms 长度归一失控，短标题命中被稀释
+- boost 凭感觉拉高 → 长尾 query 排序崩，且很难回滚定位
+- 跨 query 比较 `_score` 绝对值 → 没有意义，BM25 分数只在单次查询内可比
+- 混合检索两路 topK 给小了 → 融合阶段没有候选可选
+- 重建忘了切别名 → 查询打到旧索引，看起来"改了没效果"
+- `refresh_interval` 保持 1s 又大批量写入 → 段合并压力大，写入抖动
+
+## 十、最小可用模板
+
+```json
+PUT chunks_v3
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "refresh_interval": "30s",
+    "analysis": {
+      "analyzer": {
+        "ik_index":  { "type": "custom", "tokenizer": "ik_max_word", "filter": ["lowercase"] },
+        "ik_search": { "type": "custom", "tokenizer": "ik_smart",   "filter": ["lowercase"] }
+      }
+    }
+  },
+  "mappings": {
+    "dynamic": "strict",
+    "properties": {
+      "chunk_id": { "type": "keyword" },
+      "doc_id":   { "type": "keyword" },
+      "version":  { "type": "keyword" },
+      "title":    { "type": "text", "analyzer": "ik_index", "search_analyzer": "ik_search" },
+      "heading":  { "type": "text", "analyzer": "ik_index", "search_analyzer": "ik_search" },
+      "content":  { "type": "text", "analyzer": "ik_index", "search_analyzer": "ik_search" }
+    }
+  }
+}
+```
+
+```json
+POST chunks_v3/_search
+{
+  "query": {
+    "multi_match": {
+      "query": "膜元件破损如何处置",
+      "fields": ["title^1.5", "heading^2", "content"],
+      "type": "best_fields",
+      "minimum_should_match": "60%"
+    }
+  },
+  "size": 50
+}
+```
+
+## 参考
+
+- [Hybrid search in ES|QL: multistage retrieval](https://www.elastic.co/search-labs/de/blog/hybrid-search-multi-stage-retrieval-esql)
+- [Vector search best practices](https://www.elastic.co/search-labs/es/blog/vector-search-best-practices-elasticsearch)
+- [Reciprocal rank fusion 文档](https://www.elastic.co/guide/en/elasticsearch/reference/8.18/rrf.html)
+- [Similarity module：BM25 参数](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/index-modules-similarity.html)
+- [Practical BM25：如何选 b 和 k1](https://www.elastic.co/jp/blog/practical-bm25-part-3-considerations-for-picking-b-and-k1-in-elasticsearch)
+- [Elastic 9.5 新特性](https://www.elastic.co/fr/blog/whats-new-elastic-9-5-0)
