@@ -1,6 +1,7 @@
 ---
 title: OpenViking：把 Agent 上下文做成文件系统
 description: 从虚拟文件系统、L0/L1/L2 分层到 Hook 自动记忆，拆解一个上下文数据库的架构与边界
+topics: [Agent, 工具]
 ---
 
 先给结论：**OpenViking 不是"又一个向量库"，而是把 Memory / Resource / Skill 统一抽象成 `viking://` 目录的上下文数据库。** 它卖的不是检索接口，而是"Agent 该看到什么、看多少"这套装载规则。

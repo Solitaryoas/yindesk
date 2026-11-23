@@ -6,7 +6,13 @@ import { z } from "zod";
 
 export const docs = defineDocs({
   dir: "content/docs",
-  docs: { lastModified: true },
+  docs: {
+    lastModified: true,
+    schema: pageSchema.extend({
+      // 笔记的主题标签，用于笔记目录的按主题筛选
+      topics: z.array(z.string()).default([]),
+    }),
+  },
 });
 
 export const blogCollection = defineCollections({
